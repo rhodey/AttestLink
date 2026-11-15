@@ -1,0 +1,14 @@
+.env*
+*\.swp
+.DS_Store
+linux_ssh*
+
+/result
+/result-*
+/package/node_modules/
+/package/bin/
+/package/licenses/
+/package/wasm/
+/package/*.tgz
+/rust/target/
+/nitro/eif/target/

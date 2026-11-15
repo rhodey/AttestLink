@@ -1,0 +1,5 @@
+# No console login or password-based recovery path in the measured Sandbox.
+::once:/sbin/nitro-sandbox-boot
+::ctrlaltdel:/sbin/poweroff -f
+::shutdown:/bin/umount -a -r
+

@@ -1,0 +1,20 @@
+ListenAddress 127.0.0.1
+HostKey /run/ssh/ssh_host_ed25519_key
+PidFile /run/ssh/sshd.pid
+AuthorizedKeysFile /etc/ssh/authorized_keys
+AllowUsers sandbox
+PermitRootLogin no
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+StrictModes yes
+X11Forwarding no
+PermitUserEnvironment no
+PrintMotd no
+PrintLastLog no
+SetEnv PATH=@runtimePath@
+Subsystem sftp internal-sftp
+

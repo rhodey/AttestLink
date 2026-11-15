@@ -1,0 +1,17 @@
+#!@busybox@/bin/busybox sh
+# Kernel entry point. BusyBox init becomes PID 1 and reaps orphaned processes.
+set -eu
+export PATH='@runtimePath@'
+export TZ=UTC
+export LANG=C
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o gid=5,mode=0620,ptmxmode=0666 devpts /dev/pts
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /home
+exec @busybox@/bin/busybox init
+

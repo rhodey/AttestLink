@@ -1,0 +1,76 @@
+{
+  "nodes": {
+    "firecracker": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793904574,
+        "narHash": "sha256-JA9NjEYOVegrRJqOtyMqB/hrkhRggg3CpcDyXLYlfq0=",
+        "owner": "firecracker-microvm",
+        "repo": "firecracker",
+        "rev": "eaf83bb718a559d324613d566eaf776b31a62340",
+        "type": "github"
+      },
+      "original": {
+        "owner": "firecracker-microvm",
+        "repo": "firecracker",
+        "rev": "eaf83bb718a559d324613d566eaf776b31a62340",
+        "type": "github"
+      }
+    },
+    "linux": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794273409,
+        "narHash": "sha256-/p0zGMTX24G92h8iNaadb5FMgs10Bna/7Vfbwbk0TmU=",
+        "owner": "amazonlinux",
+        "repo": "linux",
+        "rev": "7483450dec64b4f923037de31d8c28298a7c3359",
+        "type": "github"
+      },
+      "original": {
+        "owner": "amazonlinux",
+        "repo": "linux",
+        "rev": "7483450dec64b4f923037de31d8c28298a7c3359",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1794042290,
+        "narHash": "sha256-ziZn2PvCJE5JEEpqTdxXwJpPB+L3YqoCpTAMCzyaP3U=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "firecracker": "firecracker",
+        "linux": "linux",
+        "nixpkgs": "nixpkgs",
+        "ssh-keys": "ssh-keys"
+      }
+    },
+    "ssh-keys": {
+      "flake": false,
+      "locked": {
+        "path": "./nitro",
+        "type": "path"
+      },
+      "original": {
+        "path": "./nitro",
+        "type": "path"
+      },
+      "parent": []
+    }
+  },
+  "root": "root",
+  "version": 7
+}

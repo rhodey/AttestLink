@@ -1,0 +1,81 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify AWS root certificate
+        run: |
+          mkdir -p download
+          cd download
+          curl --fail --location https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip > root.zip
+          unzip root.zip
+          sha256sum root.pem > hash.txt
+          # Check our copy against the hash of AWS's download.
+          cd ../rust
+          sha256sum --check ../download/hash.txt
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          cache: npm
+          cache-dependency-path: package/package-lock.json
+
+      - name: Prepare test environment
+        run: nix develop .#ci --no-write-lock-file --command true
+
+      - name: Build Rust WASM module
+        run: bash package/scripts/build-wasm.sh
+
+      - name: Install npm dependencies
+        shell: nix develop .#ci --no-write-lock-file --command bash -euo pipefail {0}
+        run: |
+          cd package
+          npm ci
+
+      - name: Test npm package
+        shell: nix develop .#ci --no-write-lock-file --command bash -euo pipefail {0}
+        run: |
+          cd package
+          npm test
+
+      - name: Build and test Rust helper
+        shell: nix develop .#ci --no-write-lock-file --command bash -euo pipefail {0}
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --check
+          cargo test --manifest-path rust/Cargo.toml --locked
+
+      - name: Build and test EIF tools
+        shell: nix develop .#ci --no-write-lock-file --command bash -euo pipefail {0}
+        run: |
+          cargo fmt --manifest-path nitro/eif/Cargo.toml --check
+          cargo test --manifest-path nitro/eif/Cargo.toml --locked
+          cargo build --manifest-path nitro/eif/Cargo.toml --locked
+          node --test nitro/eif/test.mjs
