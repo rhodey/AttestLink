@@ -50,7 +50,7 @@ async function request(t, endpoint, body, method = 'POST', requestHeaders = {}) 
   const response = once(stream, 'response')
   stream.end(body)
   const [headers] = await response
-  const output = await util.readJson(stream, 64 * 1024)
+  const output = await util.readJson(stream, 64 * 1024, 5000)
   connection.close()
   return { status: headers[':status'], body: output }
 }
@@ -155,22 +155,25 @@ test('hook failures and invalid output return HTTP 500 without obtaining a docum
   }
 })
 
-test('hello can finish after five seconds without a server request deadline', async t => {
-  const { endpoint, server } = await rig(t)
+test('an unfinished hello expires without obtaining a document or closing its connection', { timeout: 5000 }, async t => {
+  t.mock.method(console, 'error', () => {})
+  const { endpoint, server, calls } = await rig(t)
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const connection = session(t, endpoint)
   const received = once(server, 'stream')
   const stream = connection.request({ ':method': 'POST', ':path': '/hello' })
   stream.on('error', () => {})
-  const response = once(stream, 'response')
-  const body = JSON.stringify(input())
-  stream.write(body.slice(0, 1))
+  const closed = new Promise(resolve => stream.once('close', resolve))
+  stream.write('{')
   const [incoming] = await received
   t.mock.timers.tick(5001)
-  assert.equal(incoming.closed, false)
-  stream.end(body.slice(1))
-  assert.equal((await response)[0][':status'], 200)
-  assert.equal(typeof (await util.readJson(stream, 64 * 1024)).document, 'string')
+  await closed
+  assert.equal(incoming.destroyed, true)
+  assert.equal(calls.length, 0)
+  assert.equal(connection.destroyed, false)
+  const health = connection.request({ ':path': '/health' })
+  health.resume()
+  assert.equal((await once(health, 'response'))[0][':status'], 200)
 })
 
 test('disconnect and stream cancellation stop hook descendants', { timeout: 6000 }, async t => {

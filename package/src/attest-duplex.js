@@ -63,7 +63,7 @@ async function waitForResponse(stream, signal) {
     }),
   ])
   if (headers[':status'] !== 200) {
-    const body = await util.readJson(stream, HELLO_MAX_BYTES).catch(() => null)
+    const body = await util.readJson(stream, HELLO_MAX_BYTES, HANDSHAKE_TIMEOUT).catch(() => null)
     const detail = typeof body?.message === 'string' ? body.message : ''
     const message = detail ? `: ${detail}` : ''
     throw new Error(`Server returned HTTP ${headers[':status']}${message}`)
@@ -82,7 +82,7 @@ async function sendHello(connection, nonce, keys, extra) {
   req.on('error', () => {})
   req.end(JSON.stringify({ nonce, publicKey, extra }))
   await waitForResponse(req, signal)
-  const body = await util.readJson(req, HELLO_MAX_BYTES)
+  const body = await util.readJson(req, HELLO_MAX_BYTES, HANDSHAKE_TIMEOUT)
   if (typeof body.version !== 'string' || !semver.satisfies(body.version, '^1.0.0')) {
     throw new Error('Incompatible protocol version')
   }
