@@ -26,9 +26,10 @@ async function rig(t) {
     req.resume()
     await once(req, 'end')
     paths.push(req.url)
-    if (req.url === '/wait') { started(); await pending }
     res.setHeader('content-type', 'text/plain')
-    res.end(req.url)
+    if (req.url === '/wait-body') { res.write('unfinished'); started(res); await pending }
+    else if (req.url.startsWith('/wait')) { started(res); await pending }
+    res.end(req.url === '/wait-large' ? Buffer.alloc(256 * 1024, 'x') : req.url)
   })
   // Keep a pending HTTP response writable after the tunnel's sending side ends.
   backend.httpAllowHalfOpen = true
@@ -43,7 +44,7 @@ async function rig(t) {
     backend.closeAllConnections()
     await Promise.all([server, backend].map(server => new Promise(resolve => server.close(resolve))))
   })
-  return { endpoint: `http://127.0.0.1:${server.address().port}`, ready, release, paths }
+  return { endpoint: `http://127.0.0.1:${server.address().port}`, ready, release, paths, server, backend }
 }
 
 function connection(t, endpoint) {
@@ -179,21 +180,102 @@ test('unused duplex sessions expire without imposing an idle deadline on an esta
   assert.match(await tunnel.result, /\r\n\r\n\/wait$/)
 })
 
-test('a fetch can finish after five seconds without a server request deadline', { timeout: 5000 }, async t => {
-  const { endpoint, ready, release } = await rig(t)
+test('an unfinished fetch upload expires before contacting the backend', { timeout: 5000 }, async t => {
+  const { endpoint, paths, server } = await rig(t)
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const conn = connection(t, endpoint)
   const session = await hello(t, endpoint, conn, 'fetch')
-  const pending = http2Fetch(`${endpoint}/fetch`, {
-    method: 'POST', headers: { 'attest-link-session': session.sessionId },
-    body: JSON.stringify(util.encryptJson({ path: '/wait', method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx)),
-  }, conn)
-  pending.catch(() => {})
-  await ready
+  const received = once(server, 'stream')
+  const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
+  request.on('error', () => {})
+  const closed = new Promise(resolve => request.once('close', resolve))
+  request.write('{')
+  const [incoming] = await received
   t.mock.timers.tick(5001)
+  await closed
+  assert.equal(incoming.destroyed, true)
+  assert.deepEqual(paths, [])
+  assert.equal(conn.destroyed, false)
+  await rejected(endpoint, conn, 'fetch', session.sessionId)
+})
+
+test('fetch response deadlines close backend work stalled at headers or body', { timeout: 5000 }, async t => {
+  for (const path of ['/wait', '/wait-body']) {
+    await t.test(path, async t => {
+      t.mock.method(console, 'error', () => {})
+      const { endpoint, ready, backend } = await rig(t)
+      backend.httpAllowHalfOpen = false
+      t.mock.timers.enable({ apis: ['setTimeout'] })
+      const conn = connection(t, endpoint)
+      const session = await hello(t, endpoint, conn, 'fetch')
+      const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
+      request.on('error', () => {})
+      const closed = new Promise(resolve => request.once('close', resolve))
+      request.end(JSON.stringify(util.encryptJson({ path, method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx)))
+      const response = await ready
+      const backendClosed = once(response, 'close')
+      t.mock.timers.tick(5001)
+      await Promise.all([closed, backendClosed])
+      assert.equal(response.destroyed, true)
+      assert.equal(conn.destroyed, false)
+      const health = await http2Fetch(`${endpoint}/health`, {}, conn)
+      assert.equal(await health.text(), 'OK')
+    })
+  }
+})
+
+test('one response deadline covers backend waiting and a client that stops reading', { timeout: 5000 }, async t => {
+  t.mock.method(console, 'error', () => {})
+  const { endpoint, ready, release, server } = await rig(t)
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const conn = connection(t, endpoint)
+  const session = await hello(t, endpoint, conn, 'fetch')
+  const received = once(server, 'stream')
+  const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
+  request.on('error', () => {})
+  const response = once(request, 'response')
+  request.end(JSON.stringify(util.encryptJson({ path: '/wait-large', method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx)))
+  const [incoming] = await received
+  await ready
+  t.mock.timers.tick(3000)
   release()
-  const response = await pending
-  assert.equal(response.status, 200)
-  const plain = util.decryptJson(await response.json(), session.sessionKeys.sharedRx)
+  assert.equal((await response)[0][':status'], 200)
+  assert.ok(incoming.writableLength > 0)
+  assert.equal(incoming.writableFinished, false)
+  const closed = new Promise(resolve => incoming.once('close', resolve))
+  t.mock.timers.tick(1999)
+  assert.equal(incoming.destroyed, false)
+  t.mock.timers.tick(2)
+  await closed
+  assert.equal(incoming.destroyed, true)
+  assert.equal(conn.destroyed, false)
+})
+
+test('fetch gets its full response deadline after upload and preserves the connection after completion', { timeout: 5000 }, async t => {
+  const { endpoint, ready, release, server } = await rig(t)
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const conn = connection(t, endpoint)
+  const session = await hello(t, endpoint, conn, 'fetch')
+  const received = once(server, 'stream')
+  const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
+  const response = once(request, 'response')
+  const chunks = []
+  request.on('data', chunk => chunks.push(chunk))
+  const ended = once(request, 'end')
+  const body = JSON.stringify(util.encryptJson({ path: '/wait', method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx))
+  request.write(body.slice(0, 1))
+  await received
+  t.mock.timers.tick(4000)
+  request.end(body.slice(1))
+  await ready
+  t.mock.timers.tick(4000)
+  release()
+  assert.equal((await response)[0][':status'], 200)
+  await ended
+  const plain = util.decryptJson(JSON.parse(Buffer.concat(chunks)), session.sessionKeys.sharedRx)
   assert.equal(Buffer.from(plain.body, 'base64').toString(), '/wait')
+  t.mock.timers.tick(5001)
+  assert.equal(conn.destroyed, false)
+  const health = await http2Fetch(`${endpoint}/health`, {}, conn)
+  assert.equal(await health.text(), 'OK')
 })

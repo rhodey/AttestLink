@@ -123,7 +123,7 @@ fn verify_with_root(
     if nonce.len() != 32 || public_key.len() != 32 {
         return Err("expected a 32-byte nonce and X25519 public key".into());
     }
-    if document.is_empty() || document.len() > crate::MAX_DOCUMENT {
+    if document.is_empty() || document.len() > crate::MAX_DOC_BYTES {
         return Err(invalid_doc("invalid attestation document length"));
     }
     let outer = match decode(document)? {

@@ -47,13 +47,19 @@ export function decodeKey(value) {
   return bytes
 }
 
-export async function readJson(stream, limit) {
-  let length = 0
-  const chunks = []
-  for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
-    length += chunk.length
-    if (length > limit) throw new Error('Attestation JSON is too large')
-    chunks.push(chunk)
+export async function readJson(stream, limit, timeout) {
+  const timer = setTimeout(() => stream.destroy(new Error('Attestation JSON timeout')), timeout)
+  timer.unref()
+  try {
+    let length = 0
+    const chunks = []
+    for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
+      length += chunk.length
+      if (length > limit) throw new Error('Attestation JSON is too large')
+      chunks.push(chunk)
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } finally {
+    clearTimeout(timer)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }

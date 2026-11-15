@@ -12,11 +12,11 @@ import * as envelope from './browser/fetch-util.js'
 import { fetchBackend } from './browser/fetch-backend.js'
 
 const SESSION_TTL = 5_000
+const RESPONSE_TTL = 5_000
 const HOOK_TIMEOUT = 5_000
 const HELLO_MAX_BYTES = 32 * 1024
 const HOOK_MAX_BYTES = 64 * 1024
-const MAX_PENDING = Number(process.env.ATTEST_LINK_MAX_PENDING ?? 8)
-const MAX_CONNECTIONS = Number(process.env.ATTEST_LINK_MAX_CONNECTIONS ?? 64)
+const MAX_DOC_PENDING = Number(process.env.MAX_DOC_PENDING ?? 8)
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? '*'
 
 function writeHead(stream, status, contentType = 'application/json') {
@@ -100,7 +100,7 @@ function runHook(hook, input, signal) {
 }
 
 async function onHello(stream, headers, runtime) {
-  const { nonce, publicKey, extra, mode = 'duplex' } = await util.readJson(stream, HELLO_MAX_BYTES)
+  const { nonce, publicKey, extra, mode = 'duplex' } = await util.readJson(stream, HELLO_MAX_BYTES, SESSION_TTL)
   if (mode !== 'duplex' && mode !== 'fetch') return on400(stream)
   const cookies = headers.cookie ?? ''
   if (!/^[a-f0-9]{64}$/.test(nonce ?? '')) return on400(stream)
@@ -125,8 +125,7 @@ async function onHello(stream, headers, runtime) {
       userData = output
     }
     if (controller.signal.aborted || stream.destroyed) return
-    if (runtime.pendingAttestations >= MAX_PENDING ||
-        runtime.sessions.size + runtime.pendingAttestations >= MAX_CONNECTIONS) return on500(stream, 503)
+    if (runtime.pendingAttestations >= MAX_DOC_PENDING) return on500(stream, 503)
     runtime.pendingAttestations++
     let document
     try {
@@ -167,15 +166,22 @@ async function onFetch(stream, headers, sessions, target) {
   const controller = new AbortController()
   const cancel = () => controller.abort()
   stream.once('close', cancel)
+  let timer
   try {
     let request
     try {
-      const body = await util.readJson(stream, envelope.FETCH_MAX_BYTES)
+      const body = await util.readJson(stream, envelope.FETCH_MAX_BYTES, SESSION_TTL)
       request = envelope.decryptJson(body, keys.sharedRx)
     } catch (err) {
       on400(stream)
       return
     }
+    timer = setTimeout(() => {
+      const error = new Error('Fetch response timeout')
+      controller.abort(error)
+      stream.destroy(error)
+    }, RESPONSE_TTL)
+    timer.unref()
     const response = await fetchBackend(request, headers, target, controller.signal)
     const body = JSON.stringify(envelope.encryptJson(response.body, keys.sharedTx))
     if (Buffer.byteLength(body) > envelope.FETCH_MAX_BYTES) throw new Error('HTTP response is too large')
@@ -184,10 +190,12 @@ async function onFetch(stream, headers, sessions, target) {
       'access-control-allow-origin': CORS_ORIGIN,
     })
     stream.end(body)
+    await finished(stream, { readable: false, cleanup: true })
   } catch (err) {
     on500(stream)
     console.error('attest-link (warn)', util.cleanMessage(err.message))
   } finally {
+    clearTimeout(timer)
     stream.off('close', cancel)
     eraseKeys(keys)
   }
@@ -292,7 +300,6 @@ export async function attestServer(backend, hook, getDoc = attest.getDoc) {
       on400(stream)
     }
   })
-  server.maxConnections = MAX_CONNECTIONS
   server.closeConnections = () => {
     for (const conn of connections) conn.destroy()
     for (const session of runtime.sessions.values()) {

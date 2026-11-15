@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 
 use attest_link_rust::{
-    exit_code, invalid_doc, verify, Result, MAX_DOCUMENT, MAX_ENCODED_DOCUMENT,
+    exit_code, invalid_doc, verify, Result, MAX_DOC_BASE64_BYTES, MAX_DOC_BYTES,
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -99,14 +99,14 @@ fn run() -> Result<()> {
     } else {
         let mut encoded = Vec::new();
         io::stdin()
-            .take(MAX_ENCODED_DOCUMENT + 1)
+            .take(MAX_DOC_BASE64_BYTES + 1)
             .read_to_end(&mut encoded)?;
-        if encoded.len() as u64 > MAX_ENCODED_DOCUMENT {
+        if encoded.len() as u64 > MAX_DOC_BASE64_BYTES {
             return Err(invalid_doc("encoded attestation document is too large"));
         }
         let encoded = std::str::from_utf8(&encoded).map_err(invalid_doc)?;
         let document = BASE64.decode(encoded.trim()).map_err(invalid_doc)?;
-        if document.len() > MAX_DOCUMENT {
+        if document.len() > MAX_DOC_BYTES {
             return Err(invalid_doc("attestation document is too large"));
         }
         let evidence = verify::verify(

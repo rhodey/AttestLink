@@ -9,7 +9,7 @@ import { attestServer } from '../src/attest-server.js'
 import { attestTunnel } from '../src/attest-client.js'
 import * as duplex from '../src/attest-duplex.js'
 import * as util from '../src/util.js'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 
 const PCR0 = '12'.repeat(48)
 const HELLO_MAX_BYTES = 32 * 1024
@@ -255,14 +255,43 @@ test('nonce and attested key substitutions fail before opening the SSH backend',
 })
 
 test('attestation response reader enforces its size bound', async () => {
-  await assert.rejects(util.readJson(Readable.from([Buffer.alloc(HELLO_MAX_BYTES + 1)]), HELLO_MAX_BYTES), /too large/)
+  await assert.rejects(util.readJson(Readable.from([Buffer.alloc(HELLO_MAX_BYTES + 1)]), HELLO_MAX_BYTES, 5000), /too large/)
+})
+
+test('JSON upload progress does not renew its absolute read deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const stream = new PassThrough()
+  const reading = util.readJson(stream, HELLO_MAX_BYTES, 5000)
+  const rejected = assert.rejects(reading, /timeout/i)
+  stream.write('{')
+  t.mock.timers.tick(4000)
+  stream.write('"unfinished":')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(stream.destroyed, false)
+  t.mock.timers.tick(1001)
+  await rejected
+  assert.equal(stream.destroyed, true)
+})
+
+test('JSON read deadlines are cleared after success and parse errors', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  for (const body of ['{}', '{']) {
+    const stream = new PassThrough({ autoDestroy: false })
+    stream.end(body)
+    const reading = util.readJson(stream, HELLO_MAX_BYTES, 5000)
+    if (body === '{}') assert.deepEqual(await reading, {})
+    else await assert.rejects(reading, SyntaxError)
+    t.mock.timers.tick(5001)
+    assert.equal(stream.destroyed, false)
+    stream.destroy()
+  }
 })
 
 test('JSON reader preserves native parser errors and their input context', async () => {
   for (const body of ['{"version":"1.0.0"', '\u001b[31mnot JSON\u0007\r\n']) {
     let expected
     try { JSON.parse(body) } catch (error) { expected = error }
-    await assert.rejects(util.readJson(Readable.from([Buffer.from(body)]), HELLO_MAX_BYTES), error => {
+    await assert.rejects(util.readJson(Readable.from([Buffer.from(body)]), HELLO_MAX_BYTES, 5000), error => {
       assert.ok(error instanceof SyntaxError)
       assert.equal(error.message, expected.message)
       return true
@@ -280,7 +309,7 @@ test('backend connection failure closes only the stream that leaves its POST bod
   sodium.memzero(keys.privateKey)
   const hello = session.request({ ':method': 'POST', ':path': '/.well-known/attest-link/hello', 'content-type': 'application/json' })
   hello.end(JSON.stringify(body))
-  const reply = await util.readJson(hello, HELLO_MAX_BYTES)
+  const reply = await util.readJson(hello, HELLO_MAX_BYTES, 5000)
   assert.equal(reply.version, '1.0.0')
   assert.equal(reply.platform, 'nitro')
   const request = session.request({
