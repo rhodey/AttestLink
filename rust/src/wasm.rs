@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::Deserialize;
 
-use crate::{exit_code, invalid_doc, verify, Result, MAX_ENCODED_DOCUMENT};
+use crate::{exit_code, invalid_doc, verify, Result, MAX_DOC_BASE64_BYTES};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,7 @@ fn verify_request(input: &str) -> Result<verify::Evidence> {
             return Err("PCR0 must be a nonzero SHA-384 measurement (96 hex digits)".into());
         }
     }
-    if request.document.len() as u64 > MAX_ENCODED_DOCUMENT {
+    if request.document.len() as u64 > MAX_DOC_BASE64_BYTES {
         return Err(invalid_doc("encoded attestation document is too large"));
     }
     let document = BASE64

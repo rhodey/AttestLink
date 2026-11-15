@@ -4,8 +4,8 @@ pub mod wasm;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub const MAX_DOCUMENT: usize = 16 * 1024;
-pub const MAX_ENCODED_DOCUMENT: u64 = 24 * 1024;
+pub const MAX_DOC_BYTES: usize = 16 * 1024;
+pub const MAX_DOC_BASE64_BYTES: u64 = 24 * 1024;
 const INVALID_DOCUMENT_EXIT: i32 = 2;
 
 // Invalid peer evidence is distinct from local I/O, configuration and crypto
