@@ -15,7 +15,7 @@ const SESSION_TTL = 5_000
 const HOOK_TIMEOUT = 5_000
 const HELLO_MAX_BYTES = 32 * 1024
 const HOOK_MAX_BYTES = 64 * 1024
-const MAX_PENDING = Number(process.env.ATTEST_LINK_MAX_PENDING ?? 8)
+const MAX_DOC_PENDING = Number(process.env.MAX_DOC_PENDING ?? 8)
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? '*'
 
 function writeHead(stream, status, contentType = 'application/json') {
@@ -124,7 +124,7 @@ async function onHello(stream, headers, runtime) {
       userData = output
     }
     if (controller.signal.aborted || stream.destroyed) return
-    if (runtime.pendingAttestations >= MAX_PENDING) return on500(stream, 503)
+    if (runtime.pendingAttestations >= MAX_DOC_PENDING) return on500(stream, 503)
     runtime.pendingAttestations++
     let document
     try {
