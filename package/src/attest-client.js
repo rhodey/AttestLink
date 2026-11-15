@@ -2,8 +2,6 @@ import net from 'node:net'
 import * as duplex from './attest-duplex.js'
 import * as util from './util.js'
 
-const MAX_CONNECTIONS = Number(process.env.ATTEST_LINK_MAX_CONNECTIONS ?? 64)
-
 // A local TCP listener.
 export function attestTunnel(endpoint, pcr0, extra, verify, timeout) {
   if (pcr0 !== undefined) util.validPCR(pcr0)
@@ -48,7 +46,6 @@ export function attestTunnel(endpoint, pcr0, extra, verify, timeout) {
     }
   })
 
-  tcpServer.maxConnections = MAX_CONNECTIONS
   tcpServer.closeConnections = () => { for (const close of connections) close() }
   return tcpServer
 }

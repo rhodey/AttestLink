@@ -16,7 +16,6 @@ const HOOK_TIMEOUT = 5_000
 const HELLO_MAX_BYTES = 32 * 1024
 const HOOK_MAX_BYTES = 64 * 1024
 const MAX_PENDING = Number(process.env.ATTEST_LINK_MAX_PENDING ?? 8)
-const MAX_CONNECTIONS = Number(process.env.ATTEST_LINK_MAX_CONNECTIONS ?? 64)
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? '*'
 
 function writeHead(stream, status, contentType = 'application/json') {
@@ -125,8 +124,7 @@ async function onHello(stream, headers, runtime) {
       userData = output
     }
     if (controller.signal.aborted || stream.destroyed) return
-    if (runtime.pendingAttestations >= MAX_PENDING ||
-        runtime.sessions.size + runtime.pendingAttestations >= MAX_CONNECTIONS) return on500(stream, 503)
+    if (runtime.pendingAttestations >= MAX_PENDING) return on500(stream, 503)
     runtime.pendingAttestations++
     let document
     try {
@@ -292,7 +290,6 @@ export async function attestServer(backend, hook, getDoc = attest.getDoc) {
       on400(stream)
     }
   })
-  server.maxConnections = MAX_CONNECTIONS
   server.closeConnections = () => {
     for (const conn of connections) conn.destroy()
     for (const session of runtime.sessions.values()) {
