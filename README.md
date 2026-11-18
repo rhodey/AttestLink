@@ -1,7 +1,7 @@
 # AttestLink
 
 This repo contains an npm tool [attest-link](https://www.npmjs.com/package/attest-link)
-that allows tunneling any TCP/HTTP protocol into and out of AWS Nitro Sandboxes.
+that allows tunneling any TCP/HTTP protocol into and out of [AWS Nitro Sandboxes](https://aws.amazon.com/blogs/compute/nitro-sandboxes-hardware-isolation-for-every-eks-pod-ecs-task-and-ec2-workload/).
 Clients handshake with servers over HTTP/2 and exchange [libsodium](https://www.npmjs.com/package/libsodium)
 keys that are bound to the Nitro attestation doc. This repo also has sources for
 building and deploying a Nitro Sandbox demo that shows SSH over an attest-link tunnel.
