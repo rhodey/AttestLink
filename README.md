@@ -36,10 +36,14 @@ npx attest-link 8080 http://ec2.ip.add.ress:8080 --any-pcr
 curl -v http://localhost:8080/test-me
 ```
 
-## More CLI docs
+## More docs
 
-The [CLI docs](package/) include details like how to tunnel
-`stdio`, how to add attestation hooks, and how to bind to PCRs.
+The [CLI docs](package/) include details like how to tunnel `stdio`, how
+to add attestation hooks, and how to bind to PCRs.
+
+The [browser docs](package/README.md#browser) show how browsers can use
+`fetch` with `attest-link -s` servers.
+
 
 ## Sandbox demo
 
@@ -64,6 +68,6 @@ how to adapt the demo to an HTTP API.**
 
 ## Collaborations
 
-This work is licensed `MIT`. Also I happen to be looking for new work opportunities:
+This work is licensed `MIT`. Also I happen to be looking for new opportunities:
 
 Copyright 2026: Email:  mike@rhodey.org

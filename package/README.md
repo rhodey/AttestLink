@@ -105,8 +105,14 @@ of information secret then don't put it into a cookie, pass it as JSON.
 CORS_ORIGIN=https://app.example.com attest-link -s 8080 8081
 ```
 
+## G/V
+
+`attest-link -g` and `attest-link -v` passthrough to [Rust CLI](/rust/README.md#usage).
+There is little chance you'll need to use them unless you're building something very
+custom.
+
 ## Collaborations
 
-This work is licensed `MIT`. Also I happen to be looking for new work opportunities:
+This work is licensed `MIT`. Also I happen to be looking for new opportunities:
 
 Copyright 2026: Email:  mike@rhodey.org
