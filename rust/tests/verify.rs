@@ -352,6 +352,28 @@ fn export_wasm_fixtures() {
 }
 
 #[test]
+#[ignore = "exports a current-time signed fixture for installed-package qualification"]
+fn export_release_fixture() {
+    let path = std::env::var("ATTEST_LINK_FIXTURE").expect("ATTEST_LINK_FIXTURE is required");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let fixture = Fixture::at_time(true, now);
+    let mut claims = fixture.claims();
+    replace(&mut claims, "timestamp", Value::Integer(now.into()));
+    let document = fixture.sign(claims);
+    let root = fixture.root.to_pem().unwrap();
+    let evidence = verify(&document, &NONCE, &PUBLIC_KEY, Some(&PCR0), Some(&root)).unwrap();
+    let output = serde_json::json!({
+        "document": BASE64.encode(document), "evidence": evidence,
+        "nonce": hex::encode(NONCE), "publicKey": BASE64.encode(PUBLIC_KEY),
+        "pcr0": hex::encode(PCR0), "rootPem": String::from_utf8(root).unwrap(),
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&output).unwrap() + "\n").unwrap();
+}
+
+#[test]
 fn verifies_signed_evidence_with_optional_measurement_approval() {
     let fixture = Fixture::new();
     let doc = fixture.sign(fixture.claims());

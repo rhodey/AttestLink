@@ -64,6 +64,11 @@
     in {
       packages.x86_64-linux = releasePackages "x86_64-linux";
       packages.${system} = releasePackages system // {
+        release-notice-inputs = import ./nix/release-notice-inputs.nix {
+          inherit (buildPkgs) runCommand emscripten rust;
+          arm = pkgs.pkgsStatic;
+          x86 = (packagesFor "x86_64-linux").pkgsStatic;
+        };
         attest-link = package;
         attest-link-rust = rust;
         attest-link-wasm = wasm;
