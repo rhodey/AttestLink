@@ -1,9 +1,16 @@
 import sodium from 'libsodium-wrappers'
+import semver from 'semver'
 
+export const PROTOCOL_VERSION = '2.0.0'
 export const FETCH_MAX_BYTES = 8 * 1024 * 1024
+export const FETCH_SESSION_IDLE_MS = 60_000
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
+
+export function compatibleVersion(version) {
+  return typeof version === 'string' && semver.satisfies(version, '^' + PROTOCOL_VERSION)
+}
 
 export function encodeBase64(bytes) {
   return sodium.to_base64(bytes, sodium.base64_variants.ORIGINAL)

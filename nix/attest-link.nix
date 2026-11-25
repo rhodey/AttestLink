@@ -11,7 +11,7 @@ buildNpmPackage {
     root = ../package;
     fileset = lib.fileset.unions [ ../package/package.json ../package/package-lock.json ../package/src ];
   };
-  npmDepsHash = "sha256-kXaLpAopCR7e+1OgpUtjdWdSR2GeRT0uZICVTAxYd7k=";
+  npmDepsHash = "sha256-K4TOBOovPkzWKd+awCBg7m6mCvdX8GWRVgvlFbRkP+A=";
   dontNpmBuild = true;
   nativeBuildInputs = [ makeWrapper ];
   installPhase = ''

@@ -13,6 +13,7 @@ export interface Evidence {
 }
 
 export interface AttestResponse extends Response {
+  /** Verified evidence from the hello that established this request's session keys. */
   evidence: Evidence
 }
 
@@ -21,7 +22,7 @@ export type AttestFetch = (path: string, init?: RequestInit) => Promise<AttestRe
 export type AttestLinkOptions = {
   extra?: JsonValue
   credentials?: RequestInit['credentials']
-  /** Per-fetch timeout in milliseconds, including attestation. Defaults to 5000. */
+  /** Timeout from invocation, including queueing and any handshake. Defaults to 5000 ms. */
   timeout?: number
   fetch?: (url: string, init: RequestInit) => Promise<Response>
   verify?: (
@@ -35,5 +36,5 @@ export type AttestLinkOptions = {
   | { pcr0?: never; anyPCR: true }
 )
 
-/** Creates a fetch function that verifies a fresh attestation for every request. */
+/** Creates a serial fetch function that reuses its attested session across calls. */
 export function attestLink(endpoint: string | URL, options: AttestLinkOptions): AttestFetch
