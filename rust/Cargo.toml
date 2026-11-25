@@ -1,6 +1,6 @@
 [package]
 name = "attest-link-rust"
-version = "0.5.1"
+version = "0.6.0"
 description = "Attestation generation and verification for Nitro Enclaves and Sandboxes"
 edition = "2021"
 license = "MIT"

@@ -67,7 +67,7 @@ async function rig(t, hook) {
   return { endpoint, fetch, requests, wire, server }
 }
 
-async function startFetch(endpoint) {
+async function startFetch(t, endpoint) {
   await sodium.ready
   const keys = sodium.crypto_kx_keypair()
   try {
@@ -77,14 +77,25 @@ async function startFetch(endpoint) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         nonce: sodium.to_hex(sodium.randombytes_buf(32)),
-        publicKey: util.encodeBase64(keys.publicKey), mode: 'fetch',
+        publicKey: util.encodeBase64(keys.publicKey), mode: 'fetch', version: '2.0.0',
       }),
     })
     assert.equal(response.status, 200)
     const hello = await response.json()
+    assert.equal(hello.version, '2.0.0')
+    const { sharedTx, sharedRx } = sodium.crypto_kx_client_session_keys(keys.publicKey, keys.privateKey, util.decodeBase64(hello.publicKey))
+    t.after(() => {
+      sodium.memzero(sharedTx)
+      sodium.memzero(sharedRx)
+    })
+    const fetchUrl = new URL(endpoint)
+    fetchUrl.pathname += '/fetch'
     return {
-      sessionId: hello.sessionId,
-      keys: sodium.crypto_kx_client_session_keys(keys.publicKey, keys.privateKey, util.decodeBase64(hello.publicKey)),
+      send: (seq, request, headers = {}) => http2Fetch(fetchUrl, {
+        method: 'POST', headers: { ...headers, 'attest-link-session': hello.sessionId, 'content-type': 'application/json' },
+        body: JSON.stringify(util.encryptJson({ seq, request }, sharedTx)),
+      }),
+      decrypt: body => util.decryptJson(body, sharedRx),
     }
   } finally {
     sodium.memzero(keys.privateKey)
@@ -187,7 +198,7 @@ test('CORS permits reading transport errors without allowing browser credentials
   const { endpoint, requests } = await rig(t, 'exit 1')
   t.mock.method(console, 'error', () => {})
   const hello = JSON.stringify({
-    nonce: 'ab'.repeat(32), publicKey: Buffer.alloc(32, 1).toString('base64'), mode: 'fetch',
+    nonce: 'ab'.repeat(32), publicKey: Buffer.alloc(32, 1).toString('base64'), mode: 'fetch', version: '2.0.0',
   })
   for (const [action, body, status] of [['hello', '{}', 400], ['fetch', '{}', 403], ['hello', hello, 500]]) {
     const url = new URL(endpoint)
@@ -297,28 +308,17 @@ test('outer response headers cannot add or replace application headers', async t
 
 test('backend cookies and Host come only from the outer request', async t => {
   const { endpoint, requests } = await rig(t)
+  const session = await startFetch(t, endpoint)
+  let seq = 0
   for (const cookie of [undefined, 'session=outer']) {
-    const session = await startFetch(endpoint)
-    try {
-      const url = new URL(endpoint)
-      url.pathname += '/fetch'
-      const headers = { 'attest-link-session': session.sessionId, 'content-type': 'application/json' }
-      if (cookie) headers.cookie = cookie
-      const response = await http2Fetch(url, {
-        method: 'POST', headers,
-        body: JSON.stringify(util.encryptJson({
-          path: '/cookies', method: 'GET', body: null,
-          headers: [['cookie', 'session=inner'], ['host', 'elsewhere.test']],
-        }, session.keys.sharedTx)),
-      })
-      assert.equal(response.status, 200)
-      await response.text()
-      assert.equal(requests.at(-1).headers.cookie, cookie)
-      assert.equal(requests.at(-1).headers.host, new URL(endpoint).host)
-    } finally {
-      sodium.memzero(session.keys.sharedTx)
-      sodium.memzero(session.keys.sharedRx)
-    }
+    const response = await session.send(++seq, {
+      path: '/cookies', method: 'GET', body: null,
+      headers: [['cookie', 'session=inner'], ['host', 'elsewhere.test']],
+    }, cookie ? { cookie } : {})
+    assert.equal(response.status, 200)
+    await response.text()
+    assert.equal(requests.at(-1).headers.cookie, cookie)
+    assert.equal(requests.at(-1).headers.host, new URL(endpoint).host)
   }
 })
 
@@ -344,19 +344,34 @@ test('browser fetch preserves binary bodies, HEAD, empty responses and applicati
   assert.equal((await error.json()).path, '/error')
 })
 
-test('concurrent browser fetches use independent attestations and keys', async t => {
+test('concurrent calls on one browser fetch run in order with one attestation', async t => {
   const { endpoint, fetch, wire, requests } = await rig(t)
-  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch, verify })
-  const responses = await Promise.all(Array.from({ length: 6 }, (_, i) => attestFetch(`/request/${i}`)))
+  let active = false
+  const serial = async (url, init) => {
+    assert.equal(active, false, 'overlapping network request')
+    active = true
+    try {
+      const response = await fetch(url, init)
+      return new Response(await response.text(), { status: response.status })
+    } finally {
+      active = false
+    }
+  }
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: serial, verify })
+  const paths = Array.from({ length: 6 }, (_, i) => `/request/${i}`)
+  const responses = await Promise.all(paths.map(path => attestFetch(path)))
   const bodies = await Promise.all(responses.map(response => response.json()))
-  assert.deepEqual(bodies.map(body => body.path), Array.from({ length: 6 }, (_, i) => `/request/${i}`))
-  assert.equal(new Set(responses.map(response => response.evidence.nonce)).size, 6)
+  assert.deepEqual(bodies.map(body => body.path), paths)
+  assert.deepEqual(requests.map(request => request.path), paths)
+  assert.equal(new Set(responses.map(response => response.evidence.nonce)).size, 1)
+  responses[0].evidence.pcrs[0] = 'changed by caller'
+  assert.equal(responses[1].evidence.pcrs[0], PCR0)
+  assert.equal(wire.filter(item => new URL(item.url).pathname.endsWith('/hello')).length, 1)
   assert.equal(new Set(wire.filter(item => new URL(item.url).pathname.endsWith('/fetch'))
-    .map(item => item.init.headers.get('attest-link-session'))).size, 6)
-  assert.equal(requests.length, 6)
+    .map(item => item.init.headers.get('attest-link-session'))).size, 1)
 })
 
-test('one pooled HTTP/2 connection serves independent hellos while fetches can switch connections', async t => {
+test('a browser session works across HTTP/2 connections and each fetch instance owns its hello', async t => {
   const { endpoint, requests, server } = await rig(t)
   let connections = 0
   server.on('session', () => connections++)
@@ -373,78 +388,102 @@ test('one pooled HTTP/2 connection serves independent hellos while fetches can s
   const sameConnection = attestLink(endpoint, {
     pcr0: PCR0, fetch: (url, init) => http2Fetch(url, init, conn), verify,
   })
-  assert.equal((await (await sameConnection('/four')).json()).path, '/four')
+  const fourth = await sameConnection('/four')
+  assert.notEqual(fourth.evidence.nonce, first[0].evidence.nonce)
+  assert.equal((await fourth.json()).path, '/four')
   assert.equal(connections, 4)
 })
 
 test('an unused browser session expires and a new hello can authorize a later request', async t => {
   const { endpoint, fetch, requests } = await rig(t)
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
   let delayed = false
   const delayFirst = async (url, init) => {
     if (!delayed && new URL(url).pathname.endsWith('/fetch')) {
       delayed = true
-      t.mock.timers.tick(5001)
+      t.mock.timers.tick(util.FETCH_SESSION_IDLE_MS + 1)
     }
     return fetch(url, init)
   }
-  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: delayFirst, verify, timeout: 10000 })
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: delayFirst, verify, timeout: util.FETCH_SESSION_IDLE_MS * 2 })
   await assert.rejects(attestFetch('/expired'), /HTTP 403/)
   assert.equal(requests.length, 0)
   assert.equal((await (await attestFetch('/fresh')).json()).path, '/fresh')
   assert.equal(requests.length, 1)
 })
 
+test('an active session keeps its evidence until it goes idle', async t => {
+  const { endpoint, fetch } = await rig(t)
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch, verify })
+  const first = await attestFetch('/first')
+  for (const path of ['/second', '/third']) {
+    t.mock.timers.tick(util.FETCH_SESSION_IDLE_MS - 1)
+    assert.equal((await attestFetch(path)).evidence.nonce, first.evidence.nonce)
+  }
+  t.mock.timers.tick(util.FETCH_SESSION_IDLE_MS + 1)
+  assert.notEqual((await attestFetch('/after-idle')).evidence.nonce, first.evidence.nonce)
+})
+
+test('the server accepts gaps and dispatches a positive sequence at most once', async t => {
+  const { endpoint, requests } = await rig(t)
+  const session = await startFetch(t, endpoint)
+  const request = { path: '/write', method: 'POST', headers: [], body: null }
+  for (const seq of [undefined, -1, 0, '1', 4.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal((await session.send(seq, request)).status, 400)
+  }
+  const pair = await Promise.all([session.send(4, request), session.send(4, request)])
+  assert.deepEqual(pair.map(response => response.status).sort(), [200, 403])
+  assert.equal((await session.send(2, request)).status, 403)
+  assert.equal((await session.send(9, request)).status, 200)
+  assert.equal(requests.length, 2)
+})
+
+test('a replay cannot extend the server session idle deadline', async t => {
+  const { endpoint, requests } = await rig(t)
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const session = await startFetch(t, endpoint)
+  const request = { path: '/once', method: 'GET', headers: [], body: null }
+  assert.equal((await session.send(1, request)).status, 200)
+  t.mock.timers.tick(util.FETCH_SESSION_IDLE_MS - 1)
+  assert.equal((await session.send(1, request)).status, 403)
+  t.mock.timers.tick(2)
+  assert.equal((await session.send(2, request)).status, 403)
+  assert.equal(requests.length, 1)
+})
+
 test('validly encrypted backend escape paths cannot reach an application', async t => {
   const { endpoint, requests } = await rig(t)
   t.mock.method(console, 'error', () => {})
+  const session = await startFetch(t, endpoint)
+  let seq = 0
   for (const path of ['http://elsewhere.test/', '//elsewhere.test/', '/\\elsewhere.test/', '/private\r\nHost: elsewhere.test']) {
-    const session = await startFetch(endpoint)
-    try {
-      const url = new URL(endpoint)
-      url.pathname += '/fetch'
-      const response = await http2Fetch(url, {
-        method: 'POST', headers: { 'attest-link-session': session.sessionId, 'content-type': 'application/json' },
-        body: JSON.stringify(util.encryptJson({ path, method: 'GET', headers: [], body: null }, session.keys.sharedTx)),
-      })
-      assert.ok(response.status >= 400)
-      await response.text()
-    } finally {
-      sodium.memzero(session.keys.sharedTx)
-      sodium.memzero(session.keys.sharedRx)
-    }
+    const response = await session.send(++seq, { path, method: 'GET', headers: [], body: null })
+    assert.ok(response.status >= 400)
+    await response.text()
   }
   assert.equal(requests.length, 0)
 })
 
 test('response application headers are encrypted and HttpOnly cookies remain outside the envelope', async t => {
   const { endpoint } = await rig(t)
-  const session = await startFetch(endpoint)
-  try {
-    const url = new URL(endpoint)
-    url.pathname += '/fetch'
-    const response = await http2Fetch(url, {
-      method: 'POST', headers: { 'attest-link-session': session.sessionId, 'content-type': 'application/json' },
-      body: JSON.stringify(util.encryptJson({ path: '/binary', method: 'GET', headers: [], body: null }, session.keys.sharedTx)),
-    })
-    assert.equal(response.status, 200)
-    assert.equal(response.headers.getSetCookie().length, 2)
-    assert.equal(response.headers.get('content-type'), 'application/json')
-    assert.equal(response.headers.get('x-backend'), null)
-    const body = await response.text()
-    assert.equal(body.includes('attested-app'), false)
-    assert.equal(body.includes('application/octet-stream'), false)
-    const payload = util.decryptJson(JSON.parse(body), session.keys.sharedRx)
-    assert.deepEqual(Object.keys(payload).sort(), ['body', 'headers', 'status', 'statusText'])
-    const headers = new Headers(payload.headers)
-    assert.equal(headers.get('content-type'), 'application/octet-stream')
-    assert.equal(headers.get('x-backend'), 'attested-app')
-    assert.equal(headers.get('set-cookie'), null)
-    assert.equal(JSON.stringify(payload).includes('session=one'), false)
-  } finally {
-    sodium.memzero(session.keys.sharedTx)
-    sodium.memzero(session.keys.sharedRx)
-  }
+  const session = await startFetch(t, endpoint)
+  const response = await session.send(1, { path: '/binary', method: 'GET', headers: [], body: null })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.getSetCookie().length, 2)
+  assert.equal(response.headers.get('content-type'), 'application/json')
+  assert.equal(response.headers.get('x-backend'), null)
+  const body = await response.text()
+  assert.equal(body.includes('attested-app'), false)
+  assert.equal(body.includes('application/octet-stream'), false)
+  const { seq, response: payload } = session.decrypt(JSON.parse(body))
+  assert.equal(seq, 1)
+  assert.deepEqual(Object.keys(payload).sort(), ['body', 'headers', 'status', 'statusText'])
+  const headers = new Headers(payload.headers)
+  assert.equal(headers.get('content-type'), 'application/octet-stream')
+  assert.equal(headers.get('x-backend'), 'attested-app')
+  assert.equal(headers.get('set-cookie'), null)
+  assert.equal(JSON.stringify(payload).includes('session=one'), false)
 })
 
 test('wrong PCR and rejected evidence never forward an application request', async t => {
@@ -456,7 +495,7 @@ test('wrong PCR and rejected evidence never forward an application request', asy
 
 test('browser fetch rejects malformed hello and tampered encrypted responses', async t => {
   const { endpoint, fetch, requests } = await rig(t)
-  for (const fields of [{ version: '2.0.0' }, { platform: 'tdx' }, { sessionId: 'bad' }, { publicKey: 'bad' }]) {
+  for (const fields of [{ version: '1.0.0' }, { platform: 'tdx' }, { sessionId: 'bad' }, { publicKey: 'bad' }]) {
     const altered = async (url, init) => {
       const response = await fetch(url, init)
       return new Response(JSON.stringify({ ...await response.json(), ...fields }))
@@ -491,6 +530,74 @@ test('browser fetch does not retry a POST after a lost response and rejects sess
   assert.equal(replay.status, 403)
   await replay.text()
   assert.equal(requests.length, 1)
+})
+
+test('a reply for an earlier call cannot satisfy a later call in the same session', async t => {
+  const { endpoint, fetch, requests } = await rig(t)
+  let earlier
+  const substitute = async (url, init) => {
+    const response = await fetch(url, init)
+    if (!new URL(url).pathname.endsWith('/fetch')) return response
+    const body = await response.text()
+    earlier ??= body
+    return new Response(earlier)
+  }
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: substitute, verify })
+  assert.equal((await (await attestFetch('/one')).json()).path, '/one')
+  await assert.rejects(attestFetch('/two'))
+  assert.deepEqual(requests.map(request => request.path), ['/one', '/two'])
+})
+
+test('cancelling a queued call leaves the active and following calls usable', async t => {
+  const { endpoint, fetch, wire, requests } = await rig(t)
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const pause = async (url, init) => {
+    const response = await fetch(url, init)
+    if (new URL(url).pathname.endsWith('/fetch')) {
+      entered.resolve()
+      await release.promise
+    }
+    return response
+  }
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: pause, verify })
+  const first = attestFetch('/first')
+  await entered.promise
+  const controller = new AbortController()
+  const cancelled = assert.rejects(attestFetch('/cancelled', { signal: controller.signal }), /cancelled/)
+  const third = attestFetch('/third')
+  controller.abort(new Error('cancelled'))
+  await cancelled
+  assert.equal(wire.length, 2)
+  release.resolve()
+  await Promise.all([first, third])
+  assert.deepEqual(requests.map(request => request.path), ['/first', '/third'])
+  assert.equal(wire.length, 3)
+})
+
+test('a timed-out request stays spent and a later call can use the same session', async t => {
+  const { endpoint, fetch, wire, requests } = await rig(t)
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const entered = Promise.withResolvers()
+  let held
+  const delay = (url, init) => {
+    if (!held && new URL(url).pathname.endsWith('/fetch')) {
+      held = { url, init }
+      entered.resolve()
+      return new Promise(() => {})
+    }
+    return fetch(url, init)
+  }
+  const attestFetch = attestLink(endpoint, { pcr0: PCR0, fetch: delay, verify })
+  const expired = assert.rejects(attestFetch('/late', { method: 'POST' }), /timeout/)
+  await entered.promise
+  t.mock.timers.tick(5001)
+  await expired
+  assert.equal((await attestFetch('/next')).status, 200)
+  const retry = await http2Fetch(held.url, { ...held.init, signal: undefined })
+  assert.equal(retry.status, 403)
+  assert.deepEqual(requests.map(request => request.path), ['/next'])
+  assert.equal(wire.filter(item => new URL(item.url).pathname.endsWith('/hello')).length, 1)
 })
 
 test('browser fetch handles cancellation and verification timeouts before forwarding', async t => {

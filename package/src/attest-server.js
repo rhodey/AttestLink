@@ -49,9 +49,20 @@ function eraseKeys(keys) {
   erase(keys.sharedTx)
 }
 
-function takeKeys(sessions, sessionId, mode) {
+function expireAfterIdle(sessions, sessionId, session) {
+  const ttl = session.mode === 'fetch' ? envelope.FETCH_SESSION_IDLE_MS : SESSION_TTL
+  clearTimeout(session.expiryTimer)
+  session.expiresAt = Date.now() + ttl
+  session.expiryTimer = setTimeout(() => {
+    sessions.delete(sessionId)
+    eraseKeys(session.keys)
+  }, ttl)
+  session.expiryTimer.unref()
+}
+
+function takeDuplexKeys(sessions, sessionId) {
   const session = sessions.get(sessionId)
-  if (!session || session.mode !== mode) return
+  if (session?.mode !== 'duplex') return
   sessions.delete(sessionId)
   clearTimeout(session.expiryTimer)
   return session.keys
@@ -100,8 +111,9 @@ function runHook(hook, input, signal) {
 }
 
 async function onHello(stream, headers, runtime) {
-  const { nonce, publicKey, extra, mode = 'duplex' } = await util.readJson(stream, HELLO_MAX_BYTES, SESSION_TTL)
+  const { nonce, publicKey, extra, mode = 'duplex', version } = await util.readJson(stream, HELLO_MAX_BYTES, SESSION_TTL)
   if (mode !== 'duplex' && mode !== 'fetch') return on400(stream)
+  if (!envelope.compatibleVersion(version)) return on400(stream)
   const cookies = headers.cookie ?? ''
   if (!/^[a-f0-9]{64}$/.test(nonce ?? '')) return on400(stream)
   const clientKey = util.decodeKey(publicKey)
@@ -140,15 +152,12 @@ async function onHello(stream, headers, runtime) {
       server.publicKey, server.privateKey, clientKey,
     )
     const sessionId = util.randomHex()
-    const expiryTimer = setTimeout(() => {
-      runtime.sessions.delete(sessionId)
-      eraseKeys(keys)
-    }, SESSION_TTL)
-    expiryTimer.unref()
-    runtime.sessions.set(sessionId, { mode, keys, expiryTimer })
+    const session = { mode, keys, lastAccepted: 0 }
+    runtime.sessions.set(sessionId, session)
+    expireAfterIdle(runtime.sessions, sessionId, session)
     writeHead(stream, 200)
     stream.end(JSON.stringify({
-      version: '1.0.0', platform: 'nitro',
+      version: envelope.PROTOCOL_VERSION, platform: 'nitro',
       document, sessionId, publicKey: Buffer.from(server.publicKey).toString('base64'),
     }))
   } catch (error) {
@@ -161,21 +170,31 @@ async function onHello(stream, headers, runtime) {
 }
 
 async function onFetch(stream, headers, sessions, target) {
-  const keys = takeKeys(sessions, headers['attest-link-session'], 'fetch')
-  if (!keys) return on400(stream, 403)
+  const sessionId = headers['attest-link-session']
+  const session = sessions.get(sessionId)
+  if (session?.mode !== 'fetch') return on400(stream, 403)
   const controller = new AbortController()
   const cancel = () => controller.abort()
   stream.once('close', cancel)
-  let timer
+  let timer, replyKey
   try {
-    let request
+    let message
     try {
       const body = await util.readJson(stream, envelope.FETCH_MAX_BYTES, SESSION_TTL)
-      request = envelope.decryptJson(body, keys.sharedRx)
-    } catch (err) {
-      on400(stream)
-      return
+      if (sessions.get(sessionId) !== session) return on400(stream, 403)
+      message = envelope.decryptJson(body, session.keys.sharedRx)
+    } catch {
+      return on400(stream)
     }
+    if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || !message.request ||
+        typeof message.request !== 'object' || Array.isArray(message.request)) return on400(stream)
+    const { seq, request } = message
+    if (seq <= session.lastAccepted || Date.now() >= session.expiresAt) return on400(stream, 403)
+    // Claim the sequence before forwarding, even if the backend or reply later fails.
+    session.lastAccepted = seq
+    expireAfterIdle(sessions, sessionId, session)
+    // An admitted request owns its reply key across backend I/O and session cleanup.
+    replyKey = new Uint8Array(session.keys.sharedTx)
     timer = setTimeout(() => {
       const error = new Error('Fetch response timeout')
       controller.abort(error)
@@ -183,7 +202,7 @@ async function onFetch(stream, headers, sessions, target) {
     }, RESPONSE_TTL)
     timer.unref()
     const response = await fetchBackend(request, headers, target, controller.signal)
-    const body = JSON.stringify(envelope.encryptJson(response.body, keys.sharedTx))
+    const body = JSON.stringify(envelope.encryptJson({ seq, response: response.body }, replyKey))
     if (Buffer.byteLength(body) > envelope.FETCH_MAX_BYTES) throw new Error('HTTP response is too large')
     stream.respond({
       ...response.headers, ':status': 200, 'content-type': 'application/json', 'cache-control': 'no-store',
@@ -197,7 +216,7 @@ async function onFetch(stream, headers, sessions, target) {
   } finally {
     clearTimeout(timer)
     stream.off('close', cancel)
-    eraseKeys(keys)
+    erase(replyKey)
   }
 }
 
@@ -214,7 +233,7 @@ async function connectToTcp(target, signal) {
 }
 
 async function onDuplex(client, headers, sessions, target) {
-  const keys = takeKeys(sessions, headers['attest-link-session'], 'duplex')
+  const keys = takeDuplexKeys(sessions, headers['attest-link-session'])
   if (!keys) return on400(client, 403)
   try {
     const controller = new AbortController()

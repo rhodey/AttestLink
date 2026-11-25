@@ -101,7 +101,7 @@ test('wrong measurement rejects before any backend connection or plaintext forwa
 })
 
 test('compatible Nitro protocol versions complete an attested transfer', async t => {
-  for (const version of ['1.0.0', '1.0.7', '1.2.0', '1.9.1+build.3']) {
+  for (const version of ['2.0.0', '2.0.7', '2.2.0', '2.9.1+build.3']) {
     await t.test(version, async t => {
       const { localPort, connections } = await rig(t, { hello: { version } })
       const payload = randomBytes(1024)
@@ -113,7 +113,7 @@ test('compatible Nitro protocol versions complete an attested transfer', async t
 
 test('incompatible versions and platforms stop before verification or duplex setup', async t => {
   const cases = [
-    ...[undefined, null, 1, {}, 'invalid', '1.0', '0.9.0', '2.0.0', '1.1.0-beta.1'].map(version => ({ version })),
+    ...[undefined, null, 1, {}, 'invalid', '2.0', '1.0.0', '3.0.0', '2.1.0-beta.1'].map(version => ({ version })),
     ...[undefined, null, 'Nitro', 'tdx', 'sev'].map(platform => ({ platform })),
   ]
   for (const hello of cases) {
@@ -305,12 +305,12 @@ test('backend connection failure closes only the stream that leaves its POST bod
   session.on('error', () => {})
   t.after(() => session.destroy())
   const keys = sodium.crypto_kx_keypair()
-  const body = { nonce: randomBytes(32).toString('hex'), publicKey: Buffer.from(keys.publicKey).toString('base64') }
+  const body = { version: '2.0.0', nonce: randomBytes(32).toString('hex'), publicKey: Buffer.from(keys.publicKey).toString('base64') }
   sodium.memzero(keys.privateKey)
   const hello = session.request({ ':method': 'POST', ':path': '/.well-known/attest-link/hello', 'content-type': 'application/json' })
   hello.end(JSON.stringify(body))
   const reply = await util.readJson(hello, HELLO_MAX_BYTES, 5000)
-  assert.equal(reply.version, '1.0.0')
+  assert.equal(reply.version, '2.0.0')
   assert.equal(reply.platform, 'nitro')
   const request = session.request({
     ':method': 'POST', ':path': '/.well-known/attest-link/duplex', 'attest-link-session': reply.sessionId,

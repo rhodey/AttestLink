@@ -14,7 +14,7 @@ import * as util from '../src/util.js'
 
 const cli = fileURLToPath(new URL('../src/bin.js', import.meta.url))
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`
-const input = extra => ({ nonce: randomBytes(32).toString('hex'), publicKey: randomBytes(32).toString('base64'), extra })
+const input = extra => ({ version: '2.0.0', nonce: randomBytes(32).toString('hex'), publicKey: randomBytes(32).toString('base64'), extra })
 
 async function rig(t, hook) {
   const calls = []
@@ -62,7 +62,9 @@ test('POST hello sends every JSON extra type to the hook and attests its object 
     const response = await request(t, endpoint, JSON.stringify(hello))
     assert.equal(response.status, 200)
     const evidence = JSON.parse(Buffer.from(response.body.document, 'base64'))
-    assert.deepEqual(evidence.userData, { ...JSON.parse(JSON.stringify(hello)), cookies: '' })
+    const expected = { nonce: hello.nonce, publicKey: hello.publicKey, cookies: '' }
+    if (extra !== undefined) expected.extra = extra
+    assert.deepEqual(evidence.userData, expected)
     assert.equal(evidence.nonce, hello.nonce)
     assert.equal(evidence.publicKey, response.body.publicKey)
     assert.notEqual(evidence.publicKey, hello.publicKey, 'The document binds the server key; hook input contains the client key')
@@ -106,6 +108,17 @@ test('hello requires POST and a valid bounded JSON request before running the ho
   assert.equal((await request(t, endpoint, JSON.stringify(input()), 'GET')).status, 404)
   for (const body of ['', '{', 'null', '[]', '{}', JSON.stringify({ ...input(), nonce: 'wrong' }), JSON.stringify({ ...input(), publicKey: 'wrong' }), JSON.stringify(input('x'.repeat(33 * 1024)))]) {
     assert.equal((await request(t, endpoint, body)).status, 400)
+  }
+  assert.equal(calls.length, 0)
+})
+
+test('both hello modes require wire version 2 before requesting attestation', async t => {
+  const { endpoint, calls } = await rig(t)
+  for (const mode of ['duplex', 'fetch']) {
+    for (const version of [undefined, '1.0.0', '3.0.0']) {
+      const result = await request(t, endpoint, JSON.stringify({ ...input(), mode, version }))
+      assert.equal(result.status, 400)
+    }
   }
   assert.equal(calls.length, 0)
 })

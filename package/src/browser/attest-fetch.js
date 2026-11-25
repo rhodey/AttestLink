@@ -1,5 +1,4 @@
 import sodium from 'libsodium-wrappers'
-import semver from 'semver'
 import * as attest from './attest-wasm.js'
 import * as util from './fetch-util.js'
 
@@ -15,6 +14,19 @@ async function wait(promise, signal) {
   })
   try { return await Promise.race([promise, cancelled]) }
   finally { signal.removeEventListener('abort', abort) }
+}
+
+function httpResponse(result, evidence) {
+  if (!Number.isInteger(result?.status) || result.status < 200 || result.status > 599 ||
+      typeof result.statusText !== 'string' || !Array.isArray(result.headers)) {
+    throw new Error('Invalid HTTP response')
+  }
+  const headers = new Headers(result.headers)
+  for (const name of ['set-cookie', 'content-length', 'content-encoding', 'transfer-encoding']) headers.delete(name)
+  const bytes = result.body === null ? null : util.decodeBase64(result.body)
+  const response = new Response(bytes, { status: result.status, statusText: result.statusText, headers })
+  response.evidence = structuredClone(evidence)
+  return response
 }
 
 export function attestLink(endpoint, {
@@ -39,6 +51,92 @@ export function attestLink(endpoint, {
     return url.href
   }
 
+  let queue = Promise.resolve()
+  let session, idleTimer
+
+  function forgetSession() {
+    clearTimeout(idleTimer)
+    sodium.memzero(session.keys.sharedTx)
+    sodium.memzero(session.keys.sharedRx)
+    session = undefined
+  }
+
+  async function openSession(send, signal) {
+    const keys = sodium.crypto_kx_keypair()
+    try {
+      const nonce = sodium.to_hex(sodium.randombytes_buf(32))
+      const hello = await send('hello', {
+        mode: 'fetch', version: util.PROTOCOL_VERSION, nonce, publicKey: util.encodeBase64(keys.publicKey), extra,
+      }, HELLO_MAX_BYTES)
+      if (!util.compatibleVersion(hello.version)) throw new Error('Incompatible protocol version')
+      if (hello.platform !== 'nitro') throw new Error('Unsupported attestation platform')
+      if (!/^[a-f0-9]{64}$/.test(hello.sessionId ?? '')) throw new Error('Invalid hello response')
+      const publicKey = util.decodeBase64(hello.publicKey)
+      if (publicKey.length !== 32) throw new Error('Invalid server public key')
+      const evidence = await wait(verify(hello.document, nonce, hello.publicKey, pcr0), signal)
+      if (!evidence) throw new Error('Attestation verification failed')
+      return {
+        id: hello.sessionId, evidence, seq: 0, expires: Date.now() + util.FETCH_SESSION_IDLE_MS,
+        keys: sodium.crypto_kx_client_session_keys(keys.publicKey, keys.privateKey, publicKey),
+      }
+    } finally {
+      sodium.memzero(keys.privateKey)
+    }
+  }
+
+  async function dispatch(path, request, selectedCredentials, signal) {
+    signal.throwIfAborted()
+    await wait(sodium.ready, signal)
+    const headers = new Headers(request.headers)
+    for (const name of ['host', 'content-length', 'connection', 'transfer-encoding', 'attest-link-session']) headers.delete(name)
+    const wireHeaders = new Headers({ 'content-type': 'application/json' })
+    // Browsers supply cookies through credentials; Node callers can set them explicitly.
+    if (headers.has('cookie')) wireHeaders.set('cookie', headers.get('cookie'))
+    headers.delete('cookie')
+
+    async function send(action, payload, limit, sessionId) {
+      signal.throwIfAborted()
+      const headers = new Headers(wireHeaders)
+      if (sessionId) headers.set('attest-link-session', sessionId)
+      const response = await wait(fetch(actionUrl(action), {
+        method: 'POST', headers, body: JSON.stringify(payload), signal,
+        credentials: selectedCredentials, redirect: 'error', cache: 'no-store',
+      }), signal)
+      if (response.status !== 200) {
+        if (sessionId && response.status === 403) forgetSession()
+        const error = await util.readJson(response, HELLO_MAX_BYTES, signal).catch(() => null)
+        const message = typeof error?.message === 'string' ? `: ${error.message}` : ''
+        throw new Error(`Server returned HTTP ${response.status}${message}`)
+      }
+      return util.readJson(response, limit, signal)
+    }
+
+    const body = request.body ? util.encodeBase64(await util.readBytes(request, util.FETCH_MAX_BYTES, signal)) : null
+    if (session && (Date.now() >= session.expires || session.seq === Number.MAX_SAFE_INTEGER)) forgetSession()
+    if (!session) session = await openSession(send, signal)
+    // Hold the keys until this call finishes, even if the idle deadline passes.
+    clearTimeout(idleTimer)
+    const seq = ++session.seq
+    const sent = Date.now()
+    try {
+      const box = util.encryptJson({ seq, request: { path, method: request.method, headers: [...headers], body } }, session.keys.sharedTx)
+      const reply = await send('fetch', box, util.FETCH_MAX_BYTES, session.id)
+      const result = util.decryptJson(reply, session.keys.sharedRx)
+      if (result?.seq !== seq) throw new Error('Fetch response sequence mismatch')
+      session.expires = sent + util.FETCH_SESSION_IDLE_MS
+      return httpResponse(result.response, session.evidence)
+    } finally {
+      if (session) {
+        const remaining = session.expires - Date.now()
+        if (remaining <= 0) forgetSession()
+        else {
+          idleTimer = setTimeout(forgetSession, remaining)
+          idleTimer.unref?.()
+        }
+      }
+    }
+  }
+
   return async function attestFetch(path, init = {}) {
     if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || /[\\#\r\n]/.test(path)) {
       throw new Error('Fetch path must start with / and stay within the backend')
@@ -46,73 +144,18 @@ export function attestLink(endpoint, {
     const controller = new AbortController()
     const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
     const timer = setTimeout(() => controller.abort(new Error('Attested fetch timeout')), timeout)
-    let keys, sessionKeys
     try {
-      await wait(sodium.ready, signal)
+      signal.throwIfAborted()
       const request = new Request(new URL(path, target.origin), { ...init, signal })
-      const headers = new Headers(request.headers)
-      for (const name of ['host', 'content-length', 'connection', 'transfer-encoding', 'attest-link-session']) headers.delete(name)
-      const wireHeaders = new Headers({ 'content-type': 'application/json' })
-      // Browsers supply cookies through credentials; Node callers can set them explicitly.
-      if (headers.has('cookie')) wireHeaders.set('cookie', headers.get('cookie'))
-      headers.delete('cookie')
       const selectedCredentials = init.credentials ?? credentials
-      const send = async (action, body, sessionId) => {
-        const headers = new Headers(wireHeaders)
-        if (sessionId) headers.set('attest-link-session', sessionId)
-        const response = await wait(fetch(actionUrl(action), {
-          method: 'POST', headers, body: JSON.stringify(body), signal,
-          credentials: selectedCredentials, redirect: 'error', cache: 'no-store',
-        }), signal)
-        if (response.status !== 200) {
-          const error = await util.readJson(response, HELLO_MAX_BYTES, signal).catch(() => null)
-          const message = typeof error?.message === 'string' ? `: ${error.message}` : ''
-          throw new Error(`Server returned HTTP ${response.status}${message}`)
-        }
-        return response
-      }
-
-      const body = request.body ? util.encodeBase64(await util.readBytes(request, util.FETCH_MAX_BYTES, signal)) : null
-      keys = sodium.crypto_kx_keypair()
-      const nonce = sodium.to_hex(sodium.randombytes_buf(32))
-      const hello = await util.readJson(await send('hello', {
-        nonce, publicKey: util.encodeBase64(keys.publicKey), extra, mode: 'fetch',
-      }), HELLO_MAX_BYTES, signal)
-      if (typeof hello.version !== 'string' || !semver.satisfies(hello.version, '^1.0.0')) {
-        throw new Error('Incompatible protocol version')
-      }
-      if (hello.platform !== 'nitro') throw new Error('Unsupported attestation platform')
-      if (!/^[a-f0-9]{64}$/.test(hello.sessionId ?? '')) throw new Error('Invalid hello response')
-      const publicKey = util.decodeBase64(hello.publicKey)
-      if (publicKey.length !== 32) throw new Error('Invalid server public key')
-      const evidence = await wait(verify(hello.document, nonce, hello.publicKey, pcr0), signal)
-      if (!evidence) throw new Error('Attestation verification failed')
-      sessionKeys = sodium.crypto_kx_client_session_keys(keys.publicKey, keys.privateKey, publicKey)
-
-      const response = await send('fetch', util.encryptJson({
-        path, method: request.method, headers: [...headers], body,
-      }, sessionKeys.sharedTx), hello.sessionId)
-      const result = util.decryptJson(await util.readJson(response, util.FETCH_MAX_BYTES, signal), sessionKeys.sharedRx)
-      if (!Number.isInteger(result.status) || result.status < 200 || result.status > 599 ||
-          typeof result.statusText !== 'string' || !Array.isArray(result.headers)) {
-        throw new Error('Invalid HTTP response')
-      }
-      const responseHeaders = new Headers(result.headers)
-      for (const name of ['set-cookie', 'content-length', 'content-encoding', 'transfer-encoding']) responseHeaders.delete(name)
-      const bytes = result.body === null ? null : util.decodeBase64(result.body)
-      const output = new Response(bytes, { status: result.status, statusText: result.statusText, headers: responseHeaders })
-      output.evidence = evidence
-      return output
+      const work = queue.then(() => dispatch(path, request, selectedCredentials, signal))
+      queue = work.then(() => {}, () => {})
+      return await wait(work, signal)
     } catch (error) {
       throw signal.aborted ? signal.reason : error
     } finally {
       clearTimeout(timer)
       controller.abort()
-      if (keys) sodium.memzero(keys.privateKey)
-      if (sessionKeys) {
-        sodium.memzero(sessionKeys.sharedTx)
-        sodium.memzero(sessionKeys.sharedRx)
-      }
     }
   }
 }

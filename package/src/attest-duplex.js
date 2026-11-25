@@ -3,10 +3,10 @@ import net from 'node:net'
 import tls from 'node:tls'
 import { once } from 'node:events'
 import sodium from 'libsodium-wrappers'
-import semver from 'semver'
 import * as attest from './attest.js'
 import { EncryptStream, DecryptStream, erase } from './streams.js'
 import * as util from './util.js'
+import { PROTOCOL_VERSION, compatibleVersion } from './browser/fetch-util.js'
 
 const HELLO_MAX_BYTES = 32 * 1024
 const HANDSHAKE_TIMEOUT = 5_000
@@ -80,12 +80,10 @@ async function sendHello(connection, nonce, keys, extra) {
     'content-type': 'application/json',
   })
   req.on('error', () => {})
-  req.end(JSON.stringify({ nonce, publicKey, extra }))
+  req.end(JSON.stringify({ version: PROTOCOL_VERSION, nonce, publicKey, extra }))
   await waitForResponse(req, signal)
   const body = await util.readJson(req, HELLO_MAX_BYTES, HANDSHAKE_TIMEOUT)
-  if (typeof body.version !== 'string' || !semver.satisfies(body.version, '^1.0.0')) {
-    throw new Error('Incompatible protocol version')
-  }
+  if (!compatibleVersion(body.version)) throw new Error('Incompatible protocol version')
   if (body.platform !== 'nitro') throw new Error('Unsupported attestation platform')
   if (!/^[a-f0-9]{64}$/.test(body.sessionId ?? '')) {
     throw new Error('Invalid hello response')

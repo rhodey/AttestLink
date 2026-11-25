@@ -61,7 +61,7 @@ async function hello(t, endpoint, conn, mode) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         nonce: sodium.to_hex(sodium.randombytes_buf(32)),
-        publicKey: util.encodeBase64(keys.publicKey), mode,
+        publicKey: util.encodeBase64(keys.publicKey), version: '2.0.0', mode,
       }),
     }, conn)
     assert.equal(response.status, 200)
@@ -104,6 +104,12 @@ async function rejected(endpoint, conn, path, sessionId) {
   }, conn)
   assert.equal(response.status, 403)
   await response.text()
+}
+
+function fetchBody(session, path) {
+  return JSON.stringify(util.encryptJson({
+    seq: 1, request: { path, method: 'GET', headers: [], body: null },
+  }, session.sessionKeys.sharedTx))
 }
 
 test('fetch, duplex and failed requests share a connection without closing unrelated streams', { timeout: 5000 }, async t => {
@@ -154,11 +160,12 @@ test('session IDs cannot cross modes and rejection does not consume the matching
   assert.ok((await tunnel.result).endsWith('/streaming'))
   const response = await http2Fetch(`${endpoint}/fetch`, {
     method: 'POST', headers: { 'attest-link-session': fetching.sessionId },
-    body: JSON.stringify(util.encryptJson({ path: '/fetching', method: 'GET', headers: [], body: null }, fetching.sessionKeys.sharedTx)),
+    body: fetchBody(fetching, '/fetching'),
   }, conn)
   assert.equal(response.status, 200)
   const plain = util.decryptJson(await response.json(), fetching.sessionKeys.sharedRx)
-  assert.equal(Buffer.from(plain.body, 'base64').toString(), '/fetching')
+  assert.equal(plain.seq, 1)
+  assert.equal(Buffer.from(plain.response.body, 'base64').toString(), '/fetching')
   assert.deepEqual(paths, ['/streaming', '/fetching'])
 })
 
@@ -196,7 +203,12 @@ test('an unfinished fetch upload expires before contacting the backend', { timeo
   assert.equal(incoming.destroyed, true)
   assert.deepEqual(paths, [])
   assert.equal(conn.destroyed, false)
-  await rejected(endpoint, conn, 'fetch', session.sessionId)
+  const next = await http2Fetch(endpoint + '/fetch', {
+    method: 'POST', headers: { 'attest-link-session': session.sessionId }, body: fetchBody(session, '/after-upload-timeout'),
+  }, conn)
+  assert.equal(next.status, 200)
+  await next.arrayBuffer()
+  assert.deepEqual(paths, ['/after-upload-timeout'])
 })
 
 test('fetch response deadlines close backend work stalled at headers or body', { timeout: 5000 }, async t => {
@@ -211,7 +223,7 @@ test('fetch response deadlines close backend work stalled at headers or body', {
       const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
       request.on('error', () => {})
       const closed = new Promise(resolve => request.once('close', resolve))
-      request.end(JSON.stringify(util.encryptJson({ path, method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx)))
+      request.end(fetchBody(session, path))
       const response = await ready
       const backendClosed = once(response, 'close')
       t.mock.timers.tick(5001)
@@ -234,7 +246,7 @@ test('one response deadline covers backend waiting and a client that stops readi
   const request = conn.request({ ':method': 'POST', ':path': '/fetch', 'attest-link-session': session.sessionId })
   request.on('error', () => {})
   const response = once(request, 'response')
-  request.end(JSON.stringify(util.encryptJson({ path: '/wait-large', method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx)))
+  request.end(fetchBody(session, '/wait-large'))
   const [incoming] = await received
   await ready
   t.mock.timers.tick(3000)
@@ -262,7 +274,7 @@ test('fetch gets its full response deadline after upload and preserves the conne
   const chunks = []
   request.on('data', chunk => chunks.push(chunk))
   const ended = once(request, 'end')
-  const body = JSON.stringify(util.encryptJson({ path: '/wait', method: 'GET', headers: [], body: null }, session.sessionKeys.sharedTx))
+  const body = fetchBody(session, '/wait')
   request.write(body.slice(0, 1))
   await received
   t.mock.timers.tick(4000)
@@ -273,7 +285,8 @@ test('fetch gets its full response deadline after upload and preserves the conne
   assert.equal((await response)[0][':status'], 200)
   await ended
   const plain = util.decryptJson(JSON.parse(Buffer.concat(chunks)), session.sessionKeys.sharedRx)
-  assert.equal(Buffer.from(plain.body, 'base64').toString(), '/wait')
+  assert.equal(plain.seq, 1)
+  assert.equal(Buffer.from(plain.response.body, 'base64').toString(), '/wait')
   t.mock.timers.tick(5001)
   assert.equal(conn.destroyed, false)
   const health = await http2Fetch(`${endpoint}/health`, {}, conn)
