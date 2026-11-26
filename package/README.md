@@ -72,6 +72,7 @@ import { attestLink } from 'attest-link'
 const endpoint = 'https://example.com/attest'
 const attestFetch = attestLink(endpoint, { pcr0: 'YOUR_IMAGE_PCR0' })
 const response = await attestFetch('/inside/enclave')
+console.log(response.evidence.serverClaims, 'claims from the server hook')
 const data = await response.json()
 ```
 

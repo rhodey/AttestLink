@@ -6,7 +6,7 @@ import sodium from 'libsodium-wrappers'
 import * as attest from './attest.js'
 import { EncryptStream, DecryptStream, erase } from './streams.js'
 import * as util from './util.js'
-import { PROTOCOL_VERSION, compatibleVersion } from './browser/fetch-util.js'
+import { PROTOCOL_VERSION, compatibleVersion, connectionEvidence } from './browser/fetch-util.js'
 
 const HELLO_MAX_BYTES = 32 * 1024
 const HANDSHAKE_TIMEOUT = 5_000
@@ -157,8 +157,7 @@ export async function client(url, {
     connection.signal.throwIfAborted()
     const [encrypt, decrypt] = await startDuplex(connection, state)
     connection.finishHandshake()
-    const { pcrs, publicKey: serverPubKey, userData: serverClaims, timestamp } = state.evidence
-    return [encrypt, decrypt, { pcrs, nonce, clientPubKey, serverPubKey, serverClaims, timestamp }]
+    return [encrypt, decrypt, connectionEvidence(state.evidence, nonce, clientPubKey)]
   } catch (err) {
     connection.close()
     throw connection.signal.aborted ? connection.signal.reason : err

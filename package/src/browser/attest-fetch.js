@@ -65,18 +65,20 @@ export function attestLink(endpoint, {
     const keys = sodium.crypto_kx_keypair()
     try {
       const nonce = sodium.to_hex(sodium.randombytes_buf(32))
+      const clientPubKey = util.encodeBase64(keys.publicKey)
       const hello = await send('hello', {
-        mode: 'fetch', version: util.PROTOCOL_VERSION, nonce, publicKey: util.encodeBase64(keys.publicKey), extra,
+        mode: 'fetch', version: util.PROTOCOL_VERSION, nonce, publicKey: clientPubKey, extra,
       }, HELLO_MAX_BYTES)
       if (!util.compatibleVersion(hello.version)) throw new Error('Incompatible protocol version')
       if (hello.platform !== 'nitro') throw new Error('Unsupported attestation platform')
       if (!/^[a-f0-9]{64}$/.test(hello.sessionId ?? '')) throw new Error('Invalid hello response')
       const publicKey = util.decodeBase64(hello.publicKey)
       if (publicKey.length !== 32) throw new Error('Invalid server public key')
-      const evidence = await wait(verify(hello.document, nonce, hello.publicKey, pcr0), signal)
-      if (!evidence) throw new Error('Attestation verification failed')
+      const verified = await wait(verify(hello.document, nonce, hello.publicKey, pcr0), signal)
+      if (!verified) throw new Error('Attestation verification failed')
       return {
-        id: hello.sessionId, evidence, seq: 0, expires: Date.now() + util.FETCH_SESSION_IDLE_MS,
+        id: hello.sessionId, seq: 0, expires: Date.now() + util.FETCH_SESSION_IDLE_MS,
+        evidence: util.connectionEvidence(verified, nonce, clientPubKey),
         keys: sodium.crypto_kx_client_session_keys(keys.publicKey, keys.privateKey, publicKey),
       }
     } finally {

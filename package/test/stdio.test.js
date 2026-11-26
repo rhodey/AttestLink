@@ -12,7 +12,7 @@ import { attestServer } from '../src/attest-server.js'
 
 const cli = fileURLToPath(new URL('../src/bin.js', import.meta.url))
 const PCR0 = '12'.repeat(48)
-const userData = { text: 'first\nsecond\r\n日本語 🦊', nested: { enabled: true } }
+const serverClaims = { text: 'first\nsecond\r\n日本語 🦊', nested: { enabled: true } }
 const banner = Buffer.from([10, 255, 0, 13, 10, 128])
 
 async function listen(server) {
@@ -55,7 +55,7 @@ process.stdout.write(JSON.stringify(evidence))
   const backendPort = await listen(backend)
   const server = await attestServer(backendPort, hook, async (nonce, publicKey, metadata) => {
     await beforeDocument()
-    const data = hook === undefined ? userData : metadata
+    const data = hook === undefined ? serverClaims : metadata
     return Buffer.from(JSON.stringify({ timestamp: 123, nonce, publicKey, pcrs: { 0: PCR0 }, userData: data })).toString('base64')
   })
   const port = await listen(server)
@@ -124,7 +124,7 @@ test('stdio emits two compact headers then binary data and waits for the respons
   const { listening, evidence, data } = decodeOutput(command.output())
   assert.deepEqual(listening, { event: 'listening', address: 'stdio' })
   assert.equal(evidence.pcrs[0], PCR0)
-  assert.deepEqual(evidence.serverClaims, userData)
+  assert.deepEqual(evidence.serverClaims, serverClaims)
   assert.equal(data.length, banner.length + payload.length)
   assert.ok(data.equals(Buffer.concat([banner, payload])), 'Tunnel payload differs')
   assert.equal(connections(), 1)
@@ -225,7 +225,7 @@ test('TCP client logs one readiness line then compact evidence for each connecti
   const evidence = await Promise.all([1, 2, 3].map(command.line))
   for (const item of evidence) {
     assert.equal(item.pcrs[0], PCR0)
-    assert.deepEqual(item.serverClaims, userData)
+    assert.deepEqual(item.serverClaims, serverClaims)
   }
   assert.equal(new Set(evidence.map(item => item.nonce)).size, 3)
   command.child.kill('SIGTERM')

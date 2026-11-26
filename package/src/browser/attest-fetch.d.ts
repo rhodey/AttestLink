@@ -1,20 +1,33 @@
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
-export interface Evidence {
+interface AttestationFields {
   pcrs: { 0: string; [index: number]: string | undefined }
   /** Hex-encoded handshake nonce. */
   nonce: string
-  /** Base64-encoded server public key. */
-  publicKey: string
-  /** Decoded MessagePack; 0 when absent, 1 when decoding fails. */
-  userData: JsonValue
   /** Document timestamp in milliseconds since the Unix epoch. */
   timestamp: number
 }
 
+/** Document fields returned by the verifier. */
+export interface Evidence extends AttestationFields {
+  /** Base64-encoded server public key. */
+  publicKey: string
+  /** Decoded MessagePack; 0 when absent, 1 when decoding fails. */
+  userData: JsonValue
+}
+
+export interface ConnectionEvidence extends AttestationFields {
+  /** Base64-encoded public key sent by the client in the hello. */
+  clientPubKey: string
+  /** Base64-encoded public key from the verified document. */
+  serverPubKey: string
+  /** Decoded server claims; 0 when absent, 1 when decoding fails. */
+  serverClaims: JsonValue
+}
+
 export interface AttestResponse extends Response {
   /** Verified evidence from the hello that established this request's session keys. */
-  evidence: Evidence
+  evidence: ConnectionEvidence
 }
 
 export type AttestFetch = (path: string, init?: RequestInit) => Promise<AttestResponse>
