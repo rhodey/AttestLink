@@ -47,14 +47,14 @@ The program at `-c HOOK` will see JSON at stdin:
 ```
 
 Imagine that in addition to PCR match a client wants an AttestLink server to prove
-possession of a keypair. The client can pass `-e {"showMe":"pubKeyAbc123"}'` and the
+possession of a keypair. The client can pass `-e '{"showMe":"pubKeyAbc123"}'` and the
 server can use `-c ./server-hook` then inside `server-hook` watch for `showMe` and
 read and sign nonce, clientPubKey, serverPubKey then write the signature to stdout.
 A hook can also be used to put rate limiting before tunnel grants.
 
 | Hook result | Server behavior |
 | --- | --- |
-| Exit `0`, JSON object on stdout | Add it to the doc as server claims and continue |
+| Exit `0`, JSON object on stdout | Add it as doc.serverClaims and continue |
 | Exit `2`, `{"code":403,"message":"Access denied"}` | Return that HTTP code and JSON body |
 | Exit `1`, any other failure | Return HTTP 500 |
 
