@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { once } from 'node:events'
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import http2 from 'node:http2'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -62,12 +62,14 @@ test('POST hello sends every JSON extra type to the hook and attests its object 
     const response = await request(t, endpoint, JSON.stringify(hello))
     assert.equal(response.status, 200)
     const evidence = JSON.parse(Buffer.from(response.body.document, 'base64'))
-    const expected = { nonce: hello.nonce, publicKey: hello.publicKey, cookies: '' }
+    const expected = {
+      nonce: hello.nonce, clientPubKey: hello.publicKey, serverPubKey: response.body.publicKey, cookies: '',
+    }
     if (extra !== undefined) expected.extra = extra
     assert.deepEqual(evidence.userData, expected)
     assert.equal(evidence.nonce, hello.nonce)
     assert.equal(evidence.publicKey, response.body.publicKey)
-    assert.notEqual(evidence.publicKey, hello.publicKey, 'The document binds the server key; hook input contains the client key')
+    assert.notEqual(evidence.publicKey, hello.publicKey)
   }
   assert.equal(calls.length, 9)
 })
@@ -85,8 +87,22 @@ test('hook cookies come from HTTP headers, preserving values and duplicate order
     assert.equal(response.status, 200)
     const evidence = JSON.parse(Buffer.from(response.body.document, 'base64'))
     assert.deepEqual(evidence.userData, {
-      nonce: hello.nonce, publicKey: hello.publicKey, cookies: expected,
+      nonce: hello.nonce, clientPubKey: hello.publicKey, serverPubKey: response.body.publicKey, cookies: expected,
     })
+  }
+})
+
+test('server labels executable hooks and inline pipelines with the claims job', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'attest-link-job-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const script = join(directory, 'service hook')
+  const command = `printf '{"job":"%s"}' "$1"`
+  await writeFile(script, `#!/bin/sh\n${command}\n`, { mode: 0o700 })
+  for (const hook of [script, `${command} | cat`]) {
+    const { endpoint, calls } = await rig(t, hook)
+    const response = await request(t, endpoint, JSON.stringify(input()))
+    assert.equal(response.status, 200)
+    assert.deepEqual(calls[0].userData, { job: 'attest-link/claims' })
   }
 })
 

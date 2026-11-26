@@ -70,11 +70,10 @@ async function waitForResponse(stream, signal) {
   }
 }
 
-async function sendHello(connection, nonce, keys, extra) {
+async function sendHello(connection, nonce, publicKey, extra) {
   const { conn, signal, url } = connection
   if (signal.aborted) throw signal.reason
   await once(conn, 'connect', { signal })
-  const publicKey = Buffer.from(keys.publicKey).toString('base64')
   const req = conn.request({
     ':method': 'POST', ':path': `${url.pathname}hello${url.search}`,
     'content-type': 'application/json',
@@ -150,14 +149,16 @@ export async function client(url, {
   const connection = openHttp2(url, timeout, signal)
   const nonce = util.randomHex()
   const keys = sodium.crypto_kx_keypair()
+  const clientPubKey = Buffer.from(keys.publicKey).toString('base64')
   let state
   try {
-    const hello = await sendHello(connection, nonce, keys, extra)
+    const hello = await sendHello(connection, nonce, clientPubKey, extra)
     state = await startCrypto(verify, hello, nonce, pcr0, keys)
     connection.signal.throwIfAborted()
     const [encrypt, decrypt] = await startDuplex(connection, state)
     connection.finishHandshake()
-    return [encrypt, decrypt, state.evidence]
+    const { pcrs, publicKey: serverPubKey, userData: serverClaims, timestamp } = state.evidence
+    return [encrypt, decrypt, { pcrs, nonce, clientPubKey, serverPubKey, serverClaims, timestamp }]
   } catch (err) {
     connection.close()
     throw connection.signal.aborted ? connection.signal.reason : err

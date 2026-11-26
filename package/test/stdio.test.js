@@ -124,7 +124,7 @@ test('stdio emits two compact headers then binary data and waits for the respons
   const { listening, evidence, data } = decodeOutput(command.output())
   assert.deepEqual(listening, { event: 'listening', address: 'stdio' })
   assert.equal(evidence.pcrs[0], PCR0)
-  assert.deepEqual(evidence.userData, userData)
+  assert.deepEqual(evidence.serverClaims, userData)
   assert.equal(data.length, banner.length + payload.length)
   assert.ok(data.equals(Buffer.concat([banner, payload])), 'Tunnel payload differs')
   assert.equal(connections(), 1)
@@ -225,7 +225,7 @@ test('TCP client logs one readiness line then compact evidence for each connecti
   const evidence = await Promise.all([1, 2, 3].map(command.line))
   for (const item of evidence) {
     assert.equal(item.pcrs[0], PCR0)
-    assert.deepEqual(item.userData, userData)
+    assert.deepEqual(item.serverClaims, userData)
   }
   assert.equal(new Set(evidence.map(item => item.nonce)).size, 3)
   command.child.kill('SIGTERM')
@@ -233,7 +233,7 @@ test('TCP client logs one readiness line then compact evidence for each connecti
   assert.equal(command.output().toString().split('\n').length, 5)
 })
 
-test('--any-pcr and -e return verified userData in port-zero, stdio and TCP clients', async t => {
+test('port-zero, stdio and TCP clients expose the verified server claims and both session keys', async t => {
   for (const [mode, extra] of [['0', 0], ['stdio', false], ['tcp', ['hello', { nested: null }]]]) {
     await t.test(mode, async t => {
       const { endpoint, helper } = await rig(t, undefined, 'cat')
@@ -257,9 +257,14 @@ test('--any-pcr and -e return verified userData in port-zero, stdio and TCP clie
       assert.deepEqual(await command.closed, [0, null], command.stderr())
       if (mode === '0') evidence = JSON.parse(command.output())
       if (mode === 'stdio') evidence = decodeOutput(command.output()).evidence
-      assert.deepEqual(evidence.userData.extra, extra)
-      assert.equal(evidence.userData.nonce, evidence.nonce)
-      assert.notEqual(evidence.userData.publicKey, evidence.publicKey)
+      const { nonce, clientPubKey, serverPubKey } = evidence
+      assert.match(nonce, /^[a-f0-9]{64}$/)
+      for (const key of [clientPubKey, serverPubKey]) assert.equal(Buffer.from(key, 'base64').length, 32)
+      assert.notEqual(clientPubKey, serverPubKey)
+      assert.deepEqual(evidence, {
+        pcrs: { 0: PCR0 }, nonce, clientPubKey, serverPubKey, timestamp: 123,
+        serverClaims: { nonce, clientPubKey, serverPubKey, extra, cookies: '' },
+      })
     })
   }
 })

@@ -2,6 +2,7 @@ import net from 'node:net'
 import { STATUS_CODES } from 'node:http'
 import http2 from 'node:http2'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
 import sodium from 'libsodium-wrappers'
@@ -68,9 +69,15 @@ function takeDuplexKeys(sessions, sessionId) {
   return session.keys
 }
 
-function runHook(hook, input, signal) {
+function hookCommand(hook) {
+  const job = 'attest-link/claims'
+  if (hook.includes('/') && existsSync(hook)) return [hook, [job]]
+  return ['bash', ['-o', 'pipefail', '-c', hook, 'attest-link', job]]
+}
+
+function runHook([command, args], input, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', ['-o', 'pipefail', '-c', hook], {
+    const child = spawn(command, args, {
       detached: true, signal, timeout: HOOK_TIMEOUT, killSignal: 'SIGKILL',
     })
     const stdout = [], stderr = []
@@ -119,13 +126,15 @@ async function onHello(stream, headers, runtime) {
   const clientKey = util.decodeKey(publicKey)
 
   const server = sodium.crypto_kx_keypair()
+  const serverPubKey = Buffer.from(server.publicKey).toString('base64')
   const controller = new AbortController()
   const cancel = () => controller.abort()
   stream.once('close', cancel)
   try {
-    let userData
+    let serverClaims
     if (runtime.hook !== undefined) {
-      const [code, output] = await runHook(runtime.hook, { nonce, publicKey, extra, cookies }, controller.signal)
+      const input = { nonce, clientPubKey: publicKey, serverPubKey, extra, cookies }
+      const [code, output] = await runHook(runtime.hook, input, controller.signal)
       if (code === 2) {
         if (!Number.isInteger(output.code) || output.code < 400 || output.code > 599 || typeof output.message !== 'string') {
           throw new Error('Attestation hook rejection requires an HTTP error code and a message')
@@ -134,16 +143,14 @@ async function onHello(stream, headers, runtime) {
         stream.end(JSON.stringify({ code: output.code, message: output.message }))
         return
       }
-      userData = output
+      serverClaims = output
     }
     if (controller.signal.aborted || stream.destroyed) return
     if (runtime.pendingAttestations >= MAX_DOC_PENDING) return on500(stream, 503)
     runtime.pendingAttestations++
     let document
     try {
-      document = await runtime.getDoc(
-        nonce, Buffer.from(server.publicKey).toString('base64'), userData,
-      )
+      document = await runtime.getDoc(nonce, serverPubKey, serverClaims)
     } finally {
       runtime.pendingAttestations--
     }
@@ -158,7 +165,7 @@ async function onHello(stream, headers, runtime) {
     writeHead(stream, 200)
     stream.end(JSON.stringify({
       version: envelope.PROTOCOL_VERSION, platform: 'nitro',
-      document, sessionId, publicKey: Buffer.from(server.publicKey).toString('base64'),
+      document, sessionId, publicKey: serverPubKey,
     }))
   } catch (error) {
     on500(stream)
@@ -274,7 +281,10 @@ export async function attestServer(backend, hook, getDoc = attest.getDoc) {
   const target = util.parseAddress(backend, '127.0.0.1')
   await sodium.ready
   const connections = new Set()
-  const runtime = { hook, getDoc, pendingAttestations: 0, sessions: new Map() }
+  const runtime = {
+    hook: hook === undefined ? undefined : hookCommand(hook),
+    getDoc, pendingAttestations: 0, sessions: new Map(),
+  }
   const server = http2.createServer({
     maxSessionMemory: 4, maxHeaderListPairs: 64,
     settings: { maxConcurrentStreams: 2, maxHeaderListSize: 16 * 1024 },

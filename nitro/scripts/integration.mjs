@@ -218,14 +218,14 @@ async function main() {
   log('Checking real signed NSM evidence against the local image manifest.')
   const attestation = await run('attest-link', ['0', values.endpoint, expected.PCR0])
   const evidence = JSON.parse(attestation.stdout.toString())
-  assert.equal(typeof evidence.userData?.fortune, 'string', 'Signed user data must contain the fortune hook output')
-  assert.ok(evidence.userData.fortune.trim(), 'The signed fortune must not be empty')
+  assert.equal(typeof evidence.serverClaims?.fortune, 'string', 'Server claims must contain the signed fortune')
+  assert.ok(evidence.serverClaims.fortune.trim(), 'The signed fortune must not be empty')
   for (const number of [0, 1, 2, 6]) {
     assert.equal(evidence.pcrs?.[String(number)]?.toLowerCase(), expected[`PCR${number}`],
       `Hardware PCR${number} differs from the locally built image`)
   }
   passed.push('signed-attestation-and-local-measurements')
-  passed.push('signed-fortune-user-data')
+  passed.push('signed-fortune-server-claims')
 
   const client = await startClient(values.endpoint, expected.PCR0)
   const ssh = (command, options) => run('ssh', sshArgs(identity, client.port, command), options)
@@ -325,7 +325,7 @@ async function main() {
   passed.push('wrong-measurement-rejected-before-ssh')
 
   await stop(client.child)
-  process.stdout.write(`${JSON.stringify({ ok: true, passed, measurements: expected, fortune: evidence.userData.fortune, transferBytes: payload.length })}\n`)
+  process.stdout.write(`${JSON.stringify({ ok: true, passed, measurements: expected, fortune: evidence.serverClaims.fortune, transferBytes: payload.length })}\n`)
 }
 
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
