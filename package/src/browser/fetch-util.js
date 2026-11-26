@@ -12,6 +12,11 @@ export function compatibleVersion(version) {
   return typeof version === 'string' && semver.satisfies(version, '^' + PROTOCOL_VERSION)
 }
 
+export function connectionEvidence(verified, nonce, clientPubKey) {
+  const { pcrs, publicKey: serverPubKey, userData: serverClaims, timestamp } = verified
+  return { pcrs, nonce, clientPubKey, serverPubKey, serverClaims, timestamp }
+}
+
 export function encodeBase64(bytes) {
   return sodium.to_base64(bytes, sodium.base64_variants.ORIGINAL)
 }

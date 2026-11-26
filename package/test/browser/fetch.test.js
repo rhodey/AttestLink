@@ -16,7 +16,7 @@ const PCR0 = '12'.repeat(48)
 // Transport fixtures only. The browser verifier has its own signed-document
 // tests; production code uses the Rust verifier compiled to WebAssembly.
 const getDoc = async (nonce, publicKey, userData = {}) => Buffer.from(JSON.stringify({
-  nonce, publicKey, pcrs: { 0: PCR0 }, userData,
+  nonce, publicKey, pcrs: { 0: PCR0 }, userData, timestamp: 123,
 })).toString('base64')
 const verify = async (document, nonce, publicKey, pcr0) => {
   const evidence = JSON.parse(Buffer.from(document, 'base64'))
@@ -119,7 +119,7 @@ test('browser fetch crosses HTTP/2 connections and returns a normal HTTP respons
   assert.equal(response.headers.get('content-type'), 'application/json')
   assert.equal(response.headers.get('x-backend'), 'attested-app')
   assert.equal(response.headers.get('content-length'), null)
-  assert.deepEqual(response.evidence.userData, { fortune: 'hello browser' })
+  assert.deepEqual(response.evidence.serverClaims, { fortune: 'hello browser' })
   assert.deepEqual(await response.json(), {
     path: '/inside/enclave?hello=world', method: 'POST', body: Buffer.from('secret body').toString('base64'),
   })
@@ -229,8 +229,15 @@ test('application headers are encrypted while cookies use the outer requests and
     'content-type': 'application/x-private',
   } })
   await response.text()
-  assert.equal(response.evidence.userData.cookies, 'session=existing; theme=light')
-  assert.deepEqual(response.evidence.userData.extra, ['hello'])
+  const hello = JSON.parse(wire[0].init.body)
+  const { serverPubKey } = response.evidence.serverClaims
+  assert.equal(Buffer.from(serverPubKey, 'base64').length, 32)
+  assert.notEqual(serverPubKey, hello.publicKey)
+  assert.deepEqual(response.evidence, {
+    pcrs: { 0: PCR0 }, nonce: hello.nonce, clientPubKey: hello.publicKey, serverPubKey, timestamp: 123,
+    serverClaims: { nonce: hello.nonce, clientPubKey: hello.publicKey, serverPubKey,
+      cookies: 'session=existing; theme=light', extra: ['hello'] },
+  })
   assert.equal(requests[0].headers.cookie, 'session=existing; theme=light')
   assert.equal(requests[0].headers.authorization, 'Bearer app-token')
   assert.equal(requests[0].headers['x-app'], 'present')
@@ -363,9 +370,11 @@ test('concurrent calls on one browser fetch run in order with one attestation', 
   const bodies = await Promise.all(responses.map(response => response.json()))
   assert.deepEqual(bodies.map(body => body.path), paths)
   assert.deepEqual(requests.map(request => request.path), paths)
-  assert.equal(new Set(responses.map(response => response.evidence.nonce)).size, 1)
+  for (const response of responses) assert.deepEqual(response.evidence, responses[0].evidence)
   responses[0].evidence.pcrs[0] = 'changed by caller'
+  responses[0].evidence.serverClaims.edited = true
   assert.equal(responses[1].evidence.pcrs[0], PCR0)
+  assert.deepEqual(responses[1].evidence.serverClaims, {})
   assert.equal(wire.filter(item => new URL(item.url).pathname.endsWith('/hello')).length, 1)
   assert.equal(new Set(wire.filter(item => new URL(item.url).pathname.endsWith('/fetch'))
     .map(item => item.init.headers.get('attest-link-session'))).size, 1)

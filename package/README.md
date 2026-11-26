@@ -36,6 +36,8 @@ be anything at all.
 - `LISTEN` as `stdio` opens an stdin/stdout tunnel. After attestation, stdout sees
   two JSON lines: `{"event":"listening","address":"stdio"}`, then the attest doc
   as JSON. Then all bytes are raw from `BACKEND`.
+- `LISTEN` otherwise does `{"event":"listening","address":"HOST:PORT"}` to stdout
+  and then writes attest doc as JSON once for every new connection.
 
 ## Attestation hook
 
@@ -43,19 +45,18 @@ be anything at all.
 The program at `-c HOOK` will see JSON at stdin:
 
 ```json
-{"nonce":"…","publicKey":"…","extra":{"is":"passed by -e JSON"},"cookies":"session=abc; theme=dark"}
+{"nonce":"…","clientPubKey":"…","serverPubKey":"…","extra":{"is":"passed by -e JSON"},"cookies":"session=abc; theme=dark"}
 ```
 
-It's not easy to think of a reason why you'd want `nonce` and `publicKey` but it
-costs nothing to pass them so they are passed in, `extra` comes from `-e JSON` and
-`cookies` is the raw HTTP header without any parsing. Read attest-server.js if you
-think you want to do something with `nonce` or `publicKey`. There is no immediate
-need for you to use an attestation hook, it's here because maybe you want to rate-limit
-or auth-gate access even before clients/users are allowed a tunnel.
+Imagine that in addition to PCR match a client wants an AttestLink server to prove
+possession of a keypair. The client can pass `-e '{"showMe":"pubKeyAbc123"}'` and the
+server can use `-c ./server-hook` then inside `server-hook` watch for `showMe` and
+read and sign nonce, clientPubKey, serverPubKey then write the signature to stdout.
+A hook can also be used to put rate limiting before tunnel grants.
 
 | Hook result | Server behavior |
 | --- | --- |
-| Exit `0`, JSON object on stdout | Include it as doc.userData and continue |
+| Exit `0`, JSON object on stdout | Add it as doc.serverClaims and continue |
 | Exit `2`, `{"code":403,"message":"Access denied"}` | Return that HTTP code and JSON body |
 | Exit `1`, any other failure | Return HTTP 500 |
 
@@ -71,6 +72,9 @@ import { attestLink } from 'attest-link'
 const endpoint = 'https://example.com/attest'
 const attestFetch = attestLink(endpoint, { pcr0: 'YOUR_IMAGE_PCR0' })
 const response = await attestFetch('/inside/enclave')
+// pcr0 has already passed validation
+// response.evidence.serverClaims if you need more
+console.log(response.evidence, 'attest doc same as cli')
 const data = await response.json()
 ```
 

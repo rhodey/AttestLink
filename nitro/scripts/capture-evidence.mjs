@@ -15,11 +15,12 @@ const pcr0 = measurements.PCR0
 validPCR(pcr0)
 
 let hello
-const [encrypt, decrypt, evidence] = await client(endpoint, {
+const [encrypt, decrypt] = await client(endpoint, {
   pcr0, signal: AbortSignal.timeout(10_000),
-  verify(document, nonce, publicKey) {
-    hello = { document, nonce, publicKey }
-    return verifyDoc(document, nonce, publicKey, pcr0)
+  async verify(document, nonce, publicKey) {
+    const evidence = await verifyDoc(document, nonce, publicKey, pcr0)
+    hello = { document, nonce, publicKey, pcr0, evidence }
+    return evidence
   },
 })
 encrypt.destroy()
@@ -28,6 +29,6 @@ decrypt.destroy()
 for (const n of [1, 2, 6]) {
   const expected = measurements[`PCR${n}`]
   assert.match(expected, /^[a-f0-9]{96}$/)
-  assert.equal(evidence.pcrs[n], expected, `Hardware PCR${n} differs from the built image`)
+  assert.equal(hello.evidence.pcrs[n], expected, `Hardware PCR${n} differs from the built image`)
 }
-console.log(JSON.stringify({ ...hello, pcr0, evidence }))
+console.log(JSON.stringify(hello))

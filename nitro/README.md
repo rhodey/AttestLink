@@ -8,7 +8,7 @@ Sandbox with 1 dedicated vCPU and 2 GiB RAM.
 DoT, then chrony with NTS, then SSH and `attest-link`. The tunnel listens on
 2222 and forwards to `sshd` on loopback 2223. The attestation hook runs
 [fortune](https://wiki.archlinux.org/title/Fortune), so you'll get a random quote
-in `userData.fortune` for fun.
+in `serverClaims.fortune` for fun.
 
 ## ETA
 
@@ -88,7 +88,7 @@ PCR0=$(jq -r '.measurements.PCR0' "$HOME/sandbox-demo-image/measurements.json")
 attest-link 0 http://172.30.0.2:2222 "$PCR0"
 ```
 
-You should see JSON with the image's PCRs and `userData.fortune`.
+You should see JSON with the image's PCRs and `serverClaims.fortune`.
 
 ## SSH into
 

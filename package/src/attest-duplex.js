@@ -6,7 +6,7 @@ import sodium from 'libsodium-wrappers'
 import * as attest from './attest.js'
 import { EncryptStream, DecryptStream, erase } from './streams.js'
 import * as util from './util.js'
-import { PROTOCOL_VERSION, compatibleVersion } from './browser/fetch-util.js'
+import { PROTOCOL_VERSION, compatibleVersion, connectionEvidence } from './browser/fetch-util.js'
 
 const HELLO_MAX_BYTES = 32 * 1024
 const HANDSHAKE_TIMEOUT = 5_000
@@ -70,11 +70,10 @@ async function waitForResponse(stream, signal) {
   }
 }
 
-async function sendHello(connection, nonce, keys, extra) {
+async function sendHello(connection, nonce, publicKey, extra) {
   const { conn, signal, url } = connection
   if (signal.aborted) throw signal.reason
   await once(conn, 'connect', { signal })
-  const publicKey = Buffer.from(keys.publicKey).toString('base64')
   const req = conn.request({
     ':method': 'POST', ':path': `${url.pathname}hello${url.search}`,
     'content-type': 'application/json',
@@ -150,14 +149,15 @@ export async function client(url, {
   const connection = openHttp2(url, timeout, signal)
   const nonce = util.randomHex()
   const keys = sodium.crypto_kx_keypair()
+  const clientPubKey = Buffer.from(keys.publicKey).toString('base64')
   let state
   try {
-    const hello = await sendHello(connection, nonce, keys, extra)
+    const hello = await sendHello(connection, nonce, clientPubKey, extra)
     state = await startCrypto(verify, hello, nonce, pcr0, keys)
     connection.signal.throwIfAborted()
     const [encrypt, decrypt] = await startDuplex(connection, state)
     connection.finishHandshake()
-    return [encrypt, decrypt, state.evidence]
+    return [encrypt, decrypt, connectionEvidence(state.evidence, nonce, clientPubKey)]
   } catch (err) {
     connection.close()
     throw connection.signal.aborted ? connection.signal.reason : err
