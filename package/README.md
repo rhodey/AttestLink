@@ -36,6 +36,8 @@ be anything at all.
 - `LISTEN` as `stdio` opens an stdin/stdout tunnel. After attestation, stdout sees
   two JSON lines: `{"event":"listening","address":"stdio"}`, then the attest doc
   as JSON. Then all bytes are raw from `BACKEND`.
+- `LISTEN` otherwise prints `{"event":"listening","address":"HOST:PORT"}` to stdout
+  and then attest doc as JSON once for every new connection.
 
 ## Attestation hook
 
